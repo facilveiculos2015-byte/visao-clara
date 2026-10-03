@@ -15,54 +15,66 @@
 <link rel="stylesheet" href="css/app.css">
 </head>
 <body>
-<header class="top"><a href="#home" class="brand">👓 Visão Clara</a><span id="distBadge" class="badge">30 cm (padrão)</span></header>
+<header class="top"><a href="#home" class="brand">👓 Visão Clara</a><span id="distBadge" class="badge">22 cm</span></header>
 
 <main>
 <section data-screen="home">
-  <h1>Ler a tela sem óculos</h1>
-  <p class="lead">A tela é pré-distorcida para o seu grau, sua distância e seu ângulo de visão, de modo que a imagem que se forma na sua retina fique mais nítida.</p>
-  <div class="warn"><b>Não substitui exame oftalmológico.</b> Demonstração experimental; não é receita e não substitui óculos ou lentes.</div>
+  <h1>Ler o celular sem óculos</h1>
+  <p class="lead">O app ajusta a imagem da tela para o seu olho, para as letras pequenas ficarem mais nítidas.</p>
+  <div class="warn"><b>Não substitui exame oftalmológico.</b> É uma demonstração experimental.</div>
   <div class="btns">
-    <a class="btn primary" href="#rx">Já sei meu grau</a>
-    <a class="btn" href="#discover">Descobrir na tela</a>
-    <a class="btn" href="#read">Ler (original | pré-compensado)</a>
-    <a class="btn" href="#chart">Teste de letras pequenas (ETDRS)</a>
-    <a class="btn ghost" href="#settings">Ajustes e calibração</a>
+    <a class="btn primary" href="#discover">👁️ Fazer o teste</a>
+    <a class="btn" href="#rx">Já sei meu grau</a>
+    <a class="btn" href="#use">📱 Usar com correção</a>
+    <a class="btn" href="#chart">Letras pequenas (ETDRS)</a>
+    <a class="btn" href="#read">Comparar texto (avançado)</a>
+    <a class="btn" href="#settings">⚙️ Ajustes</a>
   </div>
-  <button id="camBtn" class="btn ghost">📷 Ativar câmera (medir distância)</button>
-  <p class="small" id="camInfo">A câmera frontal só mede distância e posição dos olhos, tudo no aparelho. Nenhuma imagem é enviada.</p>
-  <details class="expect"><summary>O que esperar (honestamente)</summary>
-    <p>Simulações (ver repositório): com borrão residual de <b>0,5–1,5 D</b> e pupila pequena, ganho típico de <b>≈1 linha</b> de acuidade. Acima de ~2 D as letras pequenas caem abaixo do primeiro “zero” óptico do olho e a tela não consegue recuperá-las; miopia alta (−6 D) a 40 cm está muito além do recuperável. Astigmatismo e presbiopia leve são os casos que mais se beneficiam. Mais brilho na tela (pupila menor) e fonte maior ajudam muito.</p>
+  <button id="camBtn" class="btn">📷 Medir distância com a câmera</button>
+  <p class="note" id="camInfo">A câmera só mede a distância do rosto, no próprio aparelho. Nenhuma imagem é enviada.</p>
+  <details class="expect"><summary>O que esperar</summary>
+    <p>Funciona melhor com borrão pequeno a moderado (0,5–1,5 D): ganho típico de cerca de 1 linha de letras. A um palmo (22 cm) o olho jovem foca sozinho até ~4,5 D de miopia; o filtro ajuda mais em astigmatismo, presbiopia (vista cansada) e miopia acima de ~4,5 D. Tela no brilho máximo ajuda muito.</p>
   </details>
 </section>
 
 <section data-screen="rx">
   <h2>Meu grau</h2>
-  <div class="warn small">Não substitui exame oftalmológico.</div>
+  <div class="warn">Não substitui exame oftalmológico.</div>
   <div class="rxgrid">
-    <div></div><b>Esférico</b><b>Cilíndrico</b><b>Eixo</b>
-    <b>OD</b><select id="odS"></select><select id="odC"></select><select id="odA"></select>
-    <b>OE</b><select id="osS"></select><select id="osC"></select><select id="osA"></select>
+    <div></div><b>Esf.</b><b>Cil.</b><b>Eixo</b>
+    <b>OD</b><select id="odS" aria-label="OD esférico"></select><select id="odC" aria-label="OD cilíndrico"></select><select id="odA" aria-label="OD eixo"></select>
+    <b>OE</b><select id="osS" aria-label="OE esférico"></select><select id="osC" aria-label="OE cilíndrico"></select><select id="osA" aria-label="OE eixo"></select>
   </div>
-  <p class="small">OD = olho direito, OE (OS) = olho esquerdo. Use os valores da receita para longe. Eixo em graus (0–180).</p>
+  <p class="note">OD = olho direito, OE = olho esquerdo. Use os valores da receita para longe.</p>
   <div class="btns">
-    <button class="btn primary" id="rxApply">Aplicar e ler</button>
-    <button class="btn" id="rxTune">Aplicar e ajuste fino (3 rodadas)</button>
+    <button class="btn primary" id="rxApply">Aplicar na tela</button>
+    <button class="btn" id="rxTune">Ajuste fino com − / +</button>
   </div>
 </section>
 
 <section data-screen="discover">
-  <h2>Descobrir na tela</h2>
-  <div class="warn small">Não substitui exame oftalmológico. Resultado é uma estimativa para leitura nesta distância.</div>
   <div id="discStep"></div>
 </section>
 
-<section data-screen="tune">
-  <h2>Ajuste fino <span id="tuneRound"></span></h2>
-  <p class="small" id="tuneEye"></p>
-  <p>Toque na versão <b>mais nítida</b>.</p>
-  <div class="variants" id="variants"></div>
-  <button class="btn ghost" id="tuneNone">Nenhuma é melhor</button>
+<section data-screen="result">
+  <h2>Seu resultado</h2>
+  <div class="warn big-warn"><b>Estimativa — não substitui exame oftalmológico.</b> Vale para leitura nesta distância, sem óculos.</div>
+  <div id="resultBox"></div>
+  <div class="btns">
+    <a class="btn primary" href="#use" id="applyUse">✅ Aplicar na tela</a>
+    <a class="btn" href="#discover">Refazer o teste</a>
+    <a class="btn" href="#home">Início</a>
+  </div>
+</section>
+
+<section data-screen="use">
+  <div class="usestage" id="useStage"></div>
+  <div class="usebar">
+    <div class="row3"><button class="btn" id="useUp" aria-label="rolar para cima">▲</button><button class="btn primary bigtoggle" id="useFilter">Filtro LIGADO</button><button class="btn" id="useDown" aria-label="rolar para baixo">▼</button></div>
+    <div class="stepper" id="useStep"></div>
+    <p class="note" id="useInfo"></p>
+    <a class="btn" href="#home">Sair</a>
+  </div>
 </section>
 
 <section data-screen="read">
@@ -102,10 +114,10 @@
   <div id="cardBar" class="cardbar"></div>
   <input type="range" id="sCard" min="200" max="420" step="1" value="320">
   <h3>Distância</h3>
-  <label class="sl">Distância manual (cm, 0 = automática) <input type="range" id="sDist" min="0" max="80" step="1" value="0"><span id="vDist"></span></label>
-  <button class="btn ghost" id="calib40">Estou exatamente a 40 cm (régua) → calibrar câmera</button>
-  <label class="sl">Acomodação disponível (D) <input type="range" id="sAcc" min="0" max="4" step="0.25" value="3"><span id="vAcc"></span></label>
-  <p class="small">0 = presbiopia (sem foco de perto). Padrão 3 D = olho jovem. Informe a idade no “Descobrir” para estimar.</p>
+  <label class="sl">Distância manual (cm, 0 = automática: câmera ou 22 cm) <input type="range" id="sDist" min="0" max="80" step="1" value="0"><span id="vDist"></span></label>
+  <button class="btn" id="calib40">Calibrar distância do rosto: estou a 22 cm (um palmo)</button>
+  <label class="sl">Acomodação disponível (D) <input type="range" id="sAcc" min="0" max="6" step="0.25" value="5"><span id="vAcc"></span></label>
+  <p class="small">0 = vista cansada (não foca de perto). Padrão 5 D = olho jovem. A idade informada no teste ajusta este valor.</p>
   <label class="sl">Viés conservador (assumir menos borrão que o medido) <input type="range" id="sBias" min="0" max="0.3" step="0.05" value="0.1"><span id="vBias"></span></label>
   <p class="small">Projetar para borrão maior que o real deixa a imagem pior que sem correção; por isso o padrão assume 0,10 D a menos.</p>
   <h3>Recursos avançados</h3>
@@ -114,12 +126,12 @@
   <label class="row"><input type="checkbox" id="fHDR" checked> Usar folga HDR/EDR acima do branco (WebGPU estendido, se suportado)</label>
   <label class="row"><input type="checkbox" id="fPre"> Pré-distorção vetorial dos glifos (experimental — piorou na simulação)</label>
   <label class="row">Resolução de processamento <select id="res"><option value="1024">1024 (melhor)</option><option value="512">512 (mais rápido)</option></select></label>
-  <p class="small" id="caps"></p>
-  <button class="btn ghost" id="reset">Apagar meus dados</button>
+  <p class="tech" id="caps"></p>
+  <button class="btn" id="reset">Apagar meus dados</button>
 </section>
 </main>
 
-<footer class="disc">Não substitui exame oftalmológico. Demonstração experimental — consulte um oftalmologista.</footer>
+<footer class="disc">Não substitui exame oftalmológico.</footer>
 <video id="cam" playsinline muted style="display:none"></video>
 <script type="module" src="js/app.js"></script>
 </body>

@@ -4,17 +4,20 @@ import { WebGPUPresenter } from "./hdr.js";
 import { CPUEngine } from "./cpu.js";
 import { Tracker } from "./tracker.js";
 import { nearRx, taboToScreen, blurInfo } from "./optics.js";
-import { drawReading, drawSentence, drawChart, chartRows, PARAGRAPH, SENTENCE, DISC_TEXT } from "./content.js";
+import { drawReading, drawChart, chartRows, PARAGRAPH, drawTest, layoutUse, drawUse, hitUse } from "./content.js";
 
 // ---------------- persisted state ----------------
 const KEY = "visaoclara.v1";
 const DEF = { rx: { od: { S: 0, C: 0, A: 0 }, os: { S: 0, C: 0, A: 0 } },
-  set: { cardPx: 325, manualCm: 0, calib: 1, accom: 3, robust: false, rgb: false, hdr: true, pre: false, res: 1024,
-         pupil: 4, K: 0.01, b: 0.6, font: 17, method: "fista", iters: 30, edrH: 2, bias: 0.10, ageSet: false }, chartLog: [], v: 4 };
+  set: { cardPx: 325, manualCm: 0, calib: 1, accom: 5, robust: false, rgb: false, hdr: true, pre: false, res: 1024,
+         pupil: 4, K: 0.01, b: 0.6, font: 17, method: "fista", iters: 30, edrH: 2, bias: 0.10, ageSet: false, age: 0, useAdj: 0 }, chartLog: [], v: 5 };
+const D0 = 0.22;                      // default viewing distance (m): "um palmo" — camera overrides
+// available accommodation from age (Hofstetter mean amplitude, ~60% sustainable), unknown age = young (5 D)
+function accomFor(a) { return a ? Math.max(0, Math.min(6, 0.6 * (18.5 - 0.3 * a))) : 5; }
 let S = JSON.parse(JSON.stringify(DEF));
-try { const j = JSON.parse(localStorage.getItem(KEY)); if (j) { const old = (j.v || 1) < 3, old4 = (j.v || 1) < 4; S = { ...S, ...j, set: { ...S.set, ...j.set }, rx: { ...S.rx, ...j.rx }, v: 4 };
+try { const j = JSON.parse(localStorage.getItem(KEY)); if (j) { const old = (j.v || 1) < 3, old4 = (j.v || 1) < 4; S = { ...S, ...j, set: { ...S.set, ...j.set }, rx: { ...S.rx, ...j.rx }, v: 5 };
   if (old) Object.assign(S.set, { robust: false, iters: 30, edrH: 2, bias: 0.10, hdr: true });
-  if (old4 && !S.set.ageSet) S.set.accom = 3; } } catch (e) {}
+  if ((j.v || 1) < 5) { S.set.accom = accomFor(S.set.ageSet ? S.set.age : 0); if (S.set.manualCm === 40) S.set.manualCm = 0; } } } catch (e) {}
 const save = () => localStorage.setItem(KEY, JSON.stringify(S));
 const $ = (id) => document.getElementById(id);
 const cssMM = () => 53.98 / S.set.cardPx;     // card SHORT side (fits a phone in portrait)
@@ -23,15 +26,15 @@ const cssMM = () => 53.98 / S.set.cardPx;     // card SHORT side (fits a phone i
 const tracker = new Tracker(); tracker.calib = S.set.calib;
 let rawD = null;
 tracker.onUpdate = (s) => { rawD = s.d; updateBadge(); };
-const distance = () => S.set.manualCm > 0 ? S.set.manualCm / 100 : (tracker.state.ok || rawD ? tracker.state.d : 0.30);
+const distance = () => S.set.manualCm > 0 ? S.set.manualCm / 100 : (tracker.state.ok ? tracker.state.d : (rawD && !tracker.state.err ? tracker.state.d : D0));
 function updateBadge() {
   const t = tracker.state, d = distance();
-  $("distBadge").textContent = S.set.manualCm > 0 ? `${(d * 100).toFixed(0)} cm (manual)` : t.ok ? `${(d * 100).toFixed(0)} cm · câmera` : `${(d * 100).toFixed(0)} cm (${t.err ? "padrão, sem câmera" : rawD ? "último" : "padrão"})`;
+  $("distBadge").textContent = `${(d * 100).toFixed(0)} cm${S.set.manualCm > 0 ? " fixo" : t.ok ? " 📷" : ""}`;
 }
 $("camBtn").onclick = async () => {
   $("camInfo").textContent = "Carregando detector de rosto (no aparelho)…";
   const ok = await tracker.start($("cam"));
-  $("camInfo").textContent = ok ? "Câmera ativa: distância e posição dos olhos medidas no aparelho." : "Câmera indisponível — usando 30 cm (ajuste manual em Ajustes). " + (tracker.state.err || "");
+  $("camInfo").textContent = ok ? "Câmera ativa: distância e posição dos olhos medidas no aparelho." : "Câmera indisponível — usando 22 cm (um palmo). Ajuste em Ajustes. " + (tracker.state.err || "");
   updateBadge();
 };
 
@@ -50,17 +53,17 @@ function notice(msg) {
   n.innerHTML = msg;
 }
 function useCPU(reason) {
-  if (main?.cpu && small?.cpu) return;
+  if (main?.cpu) return;
   console.warn("GPU path failed → CPU fallback:", reason);
   caps.engine = "cpu"; caps.fallback = reason; caps.hdr = false; caps.hdrMode = "sdr"; caps.hdrReason = "motor CPU (sem HDR)";
-  main = new CPUEngine(document.createElement("canvas"), 512); small = new CPUEngine(document.createElement("canvas"), 256);
+  main = new CPUEngine(document.createElement("canvas"), 512);
   for (const v of Object.values(views || {})) { v.E = main; v.attach(); v.modelKey = ""; v.contentKey = ""; v._pk = ""; }
-  window.__vc.main = main; window.__vc.small = small;
+  window.__vc.main = main;
   setTimeout(() => notice(`Modo de compatibilidade: a GPU deste aparelho falhou (${reason}). Usando cálculo no processador, com resolução menor.`), 0);
 }
 function cpuFailed(reason) {
   console.warn("CPU fallback failed too:", reason); caps.engine = "off";
-  for (const E of [main, small]) if (E) E.params.filter = false;
+  if (main) main.params.filter = false;
   notice(`Não foi possível calcular o filtro neste aparelho (${reason}). Mostrando o texto original.`);
 }
 function verify(E) { // called after renders; swaps engine if output is bad
@@ -74,15 +77,14 @@ function makeEngines() {
   try {
     const c = document.createElement("canvas"); main = new Engine(c, +S.set.res);
     caps.hdr = false; caps.hdrReason = S.set.hdr ? "verificando…" : "desligado nos ajustes";
-    const c2 = document.createElement("canvas"); small = new Engine(c2, 512, { preserve: true });
-    if (/[?&]simnan=1/.test(location.search)) main.simNaN = small.simNaN = true;   // QA: simulate Apple-GPU NaN
+    if (/[?&]simnan=1/.test(location.search)) main.simNaN = true;   // QA: simulate Apple-GPU NaN
     caps.webgl = true; caps.engine = "webgl2";
-    for (const E of [small, main]) { const r = selfTest(E); if (!r.ok) throw new Error("autoteste da GPU: " + r.reason); }
+    for (const E of [main]) { const r = selfTest(E); if (!r.ok) throw new Error("autoteste da GPU: " + r.reason); }
   } catch (e) { caps.webgl = false; caps.err = String(e); window.__vc = { S, caps, tracker }; useCPU(String(e.message || e)); }
   caps.dynHigh = matchMedia("(dynamic-range: high)").matches;
   caps.p3 = matchMedia("(color-gamut: p3)").matches;
   caps.cam = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
-  window.__vc = { main, small, S, caps, tracker, get engine() { return main?.cpu ? "cpu" : "webgl2"; } };
+  window.__vc = { main, S, caps, tracker, get engine() { return main?.cpu ? "cpu" : "webgl2"; } };
 }
 makeEngines();
 if (/[?&]forcecpu=1/.test(location.search)) useCPU("forçado por ?forcecpu=1 (teste)");
@@ -185,6 +187,8 @@ function route() {
   if (screen === "chart" && main) Object.assign(main.params, { filter: $("cFilter").checked, split: false, retina: $("cRetina").checked });
   if (screen === "chart" && main) { views.chart = views.chart || new View(main, $("stageChart")); views.chart.host = $("stageChart"); views.chart.attach(); views.chart.contentKey = ""; views.chart.modelKey = ""; renderChartChips(); }
   if (screen === "discover") disc.start();
+  if (screen === "result") showResult();
+  if (screen === "use" && main) use.enter();
   if (screen === "settings") showCaps();
   if (screen === "rx") fillRx();
   window.scrollTo(0, 0);
@@ -200,8 +204,8 @@ function fillRx() {
   }
 }
 function readRx() { for (const e of ["od", "os"]) S.rx[e] = { S: +$(e + "S").value, C: +$(e + "C").value, A: +$(e + "A").value }; save(); }
-$("rxApply").onclick = () => { readRx(); location.hash = "#read"; };
-$("rxTune").onclick = () => { readRx(); tune.begin(["od", "os"], () => (location.hash = "#read")); };
+$("rxApply").onclick = () => { readRx(); location.hash = "#use"; };
+$("rxTune").onclick = () => { readRx(); disc.fineOnly(); };
 
 // ----- Reading -----
 const readSpec = {
@@ -246,134 +250,162 @@ function renderChartChips() {
 }
 for (const id of ["cFilter", "cRetina"]) $(id).addEventListener("input", () => { if (main) Object.assign(main.params, { filter: $("cFilter").checked, retina: $("cRetina").checked }); });
 
-// ----- small-engine renders (discovery preview + fine-tune variants) -----
-// dispW = CSS width at which the result canvas will be shown (sets pixel pitch and text scale)
-function renderSmall(rxByEye, eye, drawFn, iters = 40, dispW = Math.min(innerWidth, 520) * 0.48) {
-  const E = small; applyParams(E);
-  const pix = cssMM() * dispW / E.N, sc = E.N / dispW;
-  const ks = kernels(rxByEye, { [eye]: 1 }, S.set.pupil); E.params.b = bFor(ks);
-  const c = document.createElement("canvas"); c.width = c.height = E.N; drawFn(c.getContext("2d"), E.N, sc, pix, ks[0]);
-  E.params.split = false; E.params.filter = caps.engine !== "off"; E.params.retina = false;
-  E.setTarget(c, false); E.setModel(ks, pix); E.retarget(); E.iterate(Math.min(iters, E.maxIters())); E.render();
-  E._verified = ""; if (!verify(E) && small !== E) return renderSmall(rxByEye, eye, drawFn, iters, dispW);
-  const out = document.createElement("canvas"); out.width = out.height = E.N; out.getContext("2d").drawImage(E.canvas, 0, 0); return out;
+// ----- big − / + stepper (no sliders in the test flow) -----
+const fA = (a) => `${Math.round(a)}°`;
+function stepper(host, { label, get, set, step, min, max, fmt, wrap = false }) {
+  host.className = "stepper";
+  host.innerHTML = `<button class="stp" data-d="-1" aria-label="${label}: menos">−</button><div class="val"><small>${label}</small><b></b></div><button class="stp" data-d="1" aria-label="${label}: mais">+</button>`;
+  const show = () => { host.querySelector("b").textContent = fmt(get()); };
+  host.querySelectorAll(".stp").forEach(b => b.onclick = () => {
+    let v = get() + (+b.dataset.d) * step;
+    v = wrap ? ((v % max) + max) % max : Math.max(min, Math.min(max, Math.round(v / step) * step));
+    set(+v.toFixed(2)); show();
+  });
+  show();
 }
 
-// ----- Fine tune: 4 variants (axis ±10°/±5°, cyl ±0.25), 3 rounds, per eye -----
-const tune = {
-  begin(eyes, done) { this.eyes = eyes; this.ei = 0; this.round = 1; this.done = done; location.hash = "#tune"; setTimeout(() => this.show(), 50); },
-  cands() {
-    const e = this.eyes[this.ei], c = S.rx[e], dA = this.round === 1 ? 10 : 5, ax = (a) => ((a % 180) + 180) % 180;
-    const list = [{ ...c, A: ax(c.A - dA) }, { ...c, A: ax(c.A + dA) }, { ...c, C: Math.min(0, c.C - 0.25) }, { ...c, C: Math.min(0, c.C + 0.25) }];
-    if (this.round === 1 && Math.abs(c.C) >= 0.5) list[1] = { ...c, A: ax(c.A + 90) };   // resolves the fan's 90° ambiguity
-    return list;
-  },
-  show() {
-    const e = this.eyes[this.ei];
-    $("tuneRound").textContent = `(rodada ${this.round}/3)`;
-    $("tuneEye").textContent = `${e === "od" ? "Olho DIREITO" : "Olho ESQUERDO"} — feche ou cubra o outro olho. Atual: ${fD(S.rx[e].S)} ${fD(S.rx[e].C)} × ${S.rx[e].A}°`;
-    const box = $("variants"); box.innerHTML = "<p class='small'>Calculando…</p>";
-    const cands = this.cands(), token = (this._tok = (this._tok || 0) + 1);
-    const one = (i) => {
-      if (token !== this._tok || i >= cands.length) return;
-      if (i === 0) box.innerHTML = "";
-      const cv = renderSmall({ [e]: cands[i] }, e, (ctx, N, sc, pix, k0) => drawSentence(ctx, N, SENTENCE, 15, sc, predistortFor(k0, 15 * sc, pix), true), 25);
-      cv.onclick = () => this.pick(i); cv.setAttribute("aria-label", `versão ${i + 1}`); box.appendChild(cv);
-      setTimeout(() => one(i + 1), 16);   // yield to the UI between variants
-    };
-    setTimeout(() => one(0), 30);
-  },
-  pick(i) {
-    const e = this.eyes[this.ei];
-    if (i !== null) S.rx[e] = this.cands()[i];
-    save();
-    if (this.round < 3) { this.round++; this.show(); return; }
-    this.ei++; this.round = 1;
-    if (this.ei < this.eyes.length) this.show(); else this.done();
-  },
+const TBOX_CROP = 0.56;   // the test box shows the top 56% of the square (where the letters are)
+// ----- TEST: small letters at true angular size, live pre-compensation on the main engine -----
+const testSpec = {
+  kernels: () => kernels(disc.work, { [disc.eye]: 1 }, S.set.pupil),
+  contentKey: () => [disc.mode, Math.round(distance() * 100), S.set.cardPx, innerWidth].join(),
+  draw: (ctx, N, scale, pixMM) => drawTest(ctx, N, { dM: distance(), pixMM, scale, cols: disc.mode === "cmp" ? 2 : 1, crop: TBOX_CROP - 0.03 }),
 };
-$("tuneNone").onclick = () => tune.pick(null);
-
-// ----- Discovery: 40 cm lock, one eye at a time, sphere slider, fan, cyl, fine tune -----
+const AGES = [["Até 39 anos", 30], ["40 a 44", 42], ["45 a 49", 47], ["50 a 54", 52], ["55 a 59", 57], ["60 ou mais", 65], ["Não sei", 0]];
 const disc = {
-  start() { this.eye = "od"; this.step = 0; this.work = { od: { S: 0, C: 0, A: 0 }, os: { S: 0, C: 0, A: 0 } }; this.render(); },
+  mode: "on",
+  start() {
+    if (this._keep) { this._keep = false; this.render(); return; }
+    this.only = false; this.eye = "od"; this.step = "intro"; this.mode = "on";
+    this.work = { od: { S: 0, C: 0, A: 0 }, os: { S: 0, C: 0, A: 0 } }; this.render();
+  },
+  fineOnly() {   // "Já sei meu grau" -> fine adjust with − / + starting from the entered Rx
+    this.only = true; this.eye = "od"; this.step = "cover"; this.mode = "on"; this.work = JSON.parse(JSON.stringify(S.rx));
+    if (screen === "discover") this.render(); else { this._keep = true; location.hash = "#discover"; }
+  },
+  hasBox() { return !!$("tbox") && !!views.test; },
+  go(step) { this.step = step; this.render(); window.scrollTo(0, 0); },
+  setMode(m) {
+    this.mode = m; if (main) Object.assign(main.params, { filter: m !== "off", split: m === "cmp", retina: false });
+    document.querySelectorAll("#seg .btn").forEach(b => b.classList.toggle("sel", b.dataset.m === m));
+  },
   render() {
-    const box = $("discStep"), e = this.eye, other = e === "od" ? "esquerdo" : "direito";
-    const eyeName = e === "od" ? "DIREITO" : "ESQUERDO";
-    const w = this.work[e];
-    if (this.step === 0) {
-      box.innerHTML = `<p>Segure o celular a <b>40 cm</b> dos olhos (um palmo e meio). ${tracker.state.ok ? "" : "Sem câmera: use uma régua."}</p>
+    const box = $("discStep"), e = this.eye, w = this.work[e];
+    const EYE = e === "od" ? "DIREITO" : "ESQUERDO", other = e === "od" ? "esquerdo" : "direito";
+    if (this.step === "intro") {
+      box.innerHTML = `<h2>Teste sem óculos</h2><div class="warn">Estimativa — não substitui exame oftalmológico.</div>
+        <p><b>Tire os óculos.</b> Segure o celular a <b>um palmo do rosto (~22 cm)</b>. Coloque o brilho da tela no máximo.</p>
         <p class="big" id="dLive"></p>
-        <label class="row">Sua idade <select id="age"><option value="">—</option>${[15,20,25,30,35,40,45,50,55,60,65,70].map(a => `<option>${a}</option>`).join("")}</select></label>
-        <p class="small">A idade estima quanto o olho ainda foca de perto (acomodação). Sem idade, assumimos olho jovem (foca bem de perto). Acima de ~45 anos informe a idade.</p>
-        <button class="btn primary" id="dGo">Estou a 40 cm</button>`;
-      if (S.set.ageSet && S.set.age) $("age").value = String(S.set.age);
-      $("age").onchange = () => { const a = +$("age").value;   // no age -> normal (young) accommodation 3 D
-        if (a) Object.assign(S.set, { accom: Math.max(0, 0.5 * (15 - 0.25 * a)), ageSet: true, age: a }); else Object.assign(S.set, { accom: 3, ageSet: false, age: 0 }); save(); };
-      const live = () => { const el = $("dLive"); if (!el) return; const d = distance(); const ok = Math.abs(d - 0.40) <= 0.03;
-        el.innerHTML = tracker.state.ok ? `<span class="${ok ? "ok" : "bad"}">${(d * 100).toFixed(0)} cm</span>` : "câmera desligada"; if (screen === "discover" && this.step === 0) requestAnimationFrame(live); };
+        ${tracker.state.ok ? "" : `<button class="btn" id="dCam">📷 Medir distância com a câmera</button>`}
+        <h3>Sua idade</h3><p class="note">A idade indica quanto o olho ainda foca de perto.</p>
+        <div class="agegrid">${AGES.map(([l, a]) => `<button class="btn age${(S.set.ageSet ? S.set.age : 0) === a ? " sel" : ""}" data-age="${a}">${l}</button>`).join("")}</div>
+        <button class="btn primary" id="dGo">Começar o teste</button>`;
+      box.querySelectorAll(".age").forEach(b => b.onclick = () => { const a = +b.dataset.age;
+        Object.assign(S.set, { age: a, ageSet: a > 0, accom: accomFor(a) }); save(); box.querySelectorAll(".age").forEach(x => x.classList.toggle("sel", x === b)); });
+      const cam = $("dCam"); if (cam) cam.onclick = async () => { cam.textContent = "Carregando…"; await tracker.start($("cam")); updateBadge(); if (this.step === "intro") this.render(); };
+      const live = () => { const el = $("dLive"); if (!el || this.step !== "intro") return; const d = distance(), ok = Math.abs(d - D0) <= 0.04;
+        el.innerHTML = tracker.state.ok ? `<span class="${ok ? "ok" : "bad"}">${(d * 100).toFixed(0)} cm ${ok ? "✓" : d > D0 ? "— aproxime" : "— afaste"}</span>` : `Distância: ${(d * 100).toFixed(0)} cm`;
+        if (screen === "discover") setTimeout(live, 250); };
       live();
-      $("dGo").onclick = () => { if (!tracker.state.ok) S.set.manualCm = 40; updateBadge(); this.step = 1; this.render(); };
-    } else if (this.step === 1) {
-      box.innerHTML = `<p>Olho <b>${eyeName}</b>: feche ou cubra o olho ${other}.</p><p class="small" id="occ"></p><button class="btn primary" id="dGo">Pronto</button>`;
-      const chk = () => { const el = $("occ"); if (!el) return; const t = tracker.state; const closed = e === "od" ? !t.leftOpen : !t.rightOpen;
-        el.textContent = t.ok ? (closed ? "✓ olho fechado detectado" : "(não detectado — se cobriu com a mão, tudo bem)") : ""; if (this.step === 1 && screen === "discover") setTimeout(chk, 200); };
-      chk(); $("dGo").onclick = () => { this.step = 2; this.render(); };
-    } else if (this.step === 2) {
-      box.innerHTML = `<p>Arraste até a frase ficar <b>o mais nítida possível</b> (filtro ligado).</p><div id="pv"></div>
-        <input type="range" id="sph" min="-8" max="2" step="0.25" value="${w.S}" style="width:100%"><p class="big" id="sphV"></p>
-        <button class="btn primary" id="dGo">Esta é a mais nítida</button>`;
-      const upd = () => { w.S = +$("sph").value; $("sphV").textContent = `esférico ${fD(w.S)} D`; this.preview(); };
-      $("sph").oninput = () => { clearTimeout(this._t); this._t = setTimeout(upd, 60); }; upd();
-      $("dGo").onclick = () => { this.step = 3; this.render(); };
-    } else if (this.step === 3) {
-      let svg = `<svg viewBox="-110 -110 220 120" class="fan">`;
-      for (let a = 0; a < 180; a += 10) { const r = a * Math.PI / 180, x = Math.cos(r), y = -Math.sin(r);
-        svg += `<line x1="${x * 22}" y1="${y * 22}" x2="${x * 95}" y2="${y * 95}" stroke="#000" stroke-width="2.2"/><text x="${x * 104}" y="${y * 104 + 3}" font-size="7" text-anchor="middle">${a}</text>
-        <line data-a="${a}" x1="0" y1="0" x2="${x * 110}" y2="${y * 110}" stroke="transparent" stroke-width="12"/>`; }
-      box.innerHTML = `<p>Olho ${eyeName}. Toque na linha <b>mais escura/nítida</b>.</p>${svg}</svg><button class="btn" id="dSame">Todas iguais (sem astigmatismo)</button>`;
-      box.querySelectorAll("line[data-a]").forEach(l => l.onclick = () => {
-        const axisScreen = (+l.dataset.a + 90) % 180; w.A = (180 - axisScreen) % 180; w.C = -0.75; this.step = 4; this.render(); });
-      $("dSame").onclick = () => { w.C = 0; this.finishEye(); };
-    } else if (this.step === 4) {
-      box.innerHTML = `<p>Ajuste o cilíndrico até a frase e a grade ficarem mais nítidas.</p><div id="pv"></div>
-        <input type="range" id="cyl" min="-4" max="0" step="0.25" value="${w.C}" style="width:100%"><p class="big" id="cylV"></p>
-        <button class="btn primary" id="dGo">Continuar para ajuste fino</button>`;
-      const upd = () => { w.C = +$("cyl").value; $("cylV").textContent = `cil ${fD(w.C)} × ${w.A}°`; this.preview(true); };
-      $("cyl").oninput = () => { clearTimeout(this._t); this._t = setTimeout(upd, 60); }; upd();
-      $("dGo").onclick = () => this.finishEye();
+      $("dGo").onclick = () => this.go("cover");
+    } else if (this.step === "cover") {
+      box.innerHTML = `<p class="eye">Olho ${EYE}</p><p class="big">Cubra o olho ${other} com a mão.</p><p class="note" id="occ"></p><button class="btn primary" id="dGo">Pronto</button>`;
+      const chk = () => { const el = $("occ"); if (!el || this.step !== "cover") return; const t = tracker.state, closed = e === "od" ? !t.leftOpen : !t.rightOpen;
+        el.textContent = t.ok ? (closed ? "✓ olho coberto" : "Se cobriu com a mão, tudo bem.") : ""; if (screen === "discover") setTimeout(chk, 300); };
+      chk(); $("dGo").onclick = () => this.go(this.only ? "fine" : "sph");
+    } else if (this.step === "fan") {
+      if (this.fanA === undefined) this.fanA = 90;
+      box.innerHTML = `<p class="eye">Olho ${EYE}</p><p>Alguma linha parece <b>mais escura</b>? Use <b>−</b> / <b>+</b> para marcar essa linha.</p>
+        <div id="fanBox"></div><div id="stA"></div>
+        <button class="btn primary" id="dGo">Esta linha é a mais escura</button><button class="btn" id="dSame">Todas iguais</button>`;
+      const drawFan = () => { let svg = `<svg viewBox="-115 -112 230 122" class="fan" role="img" aria-label="leque de linhas">`;
+        for (let a = 0; a < 180; a += 10) { const r = a * Math.PI / 180, x = Math.cos(r), y = -Math.sin(r), on = a === this.fanA;
+          svg += `<line x1="${x * 20}" y1="${y * 20}" x2="${x * 92}" y2="${y * 92}" stroke="#000" stroke-width="3.2"/>`;
+          if (on) svg += `<circle cx="${x * 102}" cy="${y * 102}" r="8" fill="none" stroke="#d00" stroke-width="3"/>`; }
+        $("fanBox").innerHTML = svg + "</svg>"; };
+      drawFan();
+      stepper($("stA"), { label: "Linha marcada", get: () => this.fanA, set: (v) => { this.fanA = v; drawFan(); }, step: 10, min: 0, max: 180, wrap: true, fmt: fA });
+      $("dGo").onclick = () => { const axisScreen = (this.fanA + 90) % 180; w.A = (180 - axisScreen) % 180; if (!w.C) w.C = -0.75; this.go("cyl"); };
+      $("dSame").onclick = () => { w.C = 0; this.go("fine"); };
+    } else {   // sph | cyl | fine : live test box
+      const ins = { sph: "Toque <b>−</b> ou <b>+</b> até as letras pequenas ficarem <b>mais nítidas</b>.",
+        cyl: "Agora ajuste o <b>cilíndrico</b> até as letras ficarem mais nítidas.", fine: "Ajuste fino: eixo, cilíndrico e esférico." }[this.step];
+      box.innerHTML = `<p class="eye">Olho ${EYE}</p><p>${ins}</p><div class="tbox" id="tbox"></div>
+        ${this.step === "fine" ? `<div id="stA"></div><div id="stC"></div>` : ""}<div id="${this.step === "cyl" ? "stC" : "stS"}"></div>${this.step === "fine" ? `<div id="stS"></div>` : ""}
+        <button class="btn primary" id="dGo">${this.step === "fine" ? "Pronto" : "Esta é a mais nítida"}</button>
+        <div class="seg" id="seg"><button class="btn" data-m="off">Sem filtro</button><button class="btn" data-m="on">Com filtro</button><button class="btn" data-m="cmp">Comparar</button></div>`;
+      if ($("stS")) stepper($("stS"), { label: "Esférico", get: () => w.S, set: (v) => (w.S = v), step: 0.25, min: -8, max: 2, fmt: (v) => fD(v) + " D" });
+      if ($("stC")) stepper($("stC"), { label: "Cilíndrico", get: () => w.C, set: (v) => (w.C = v), step: 0.25, min: -4, max: 0, fmt: (v) => fD(v) + " D" });
+      if ($("stA")) stepper($("stA"), { label: "Eixo", get: () => w.A, set: (v) => (w.A = v), step: 5, min: 0, max: 180, wrap: true, fmt: fA });
+      document.querySelectorAll("#seg .btn").forEach(b => b.onclick = () => this.setMode(b.dataset.m));
+      const v = views.test || (views.test = new View(main, null)); v.E = main; v.host = $("tbox"); v.attach(); v.contentKey = ""; v.modelKey = "";
+      this.setMode(this.mode);
+      $("dGo").onclick = () => {
+        if (this.step === "sph") return this.go("fan");
+        if (this.step === "cyl") return this.go("fine");
+        S.rx[e] = { ...w }; save();
+        if (e === "od") { this.eye = "os"; this.fanA = undefined; this.go("cover"); } else location.hash = "#result";
+      };
     }
   },
-  preview(grid = false) {   // phone-size text (17 px CSS) filling a cropped box; shown at the real width
-    const pv = $("pv"); if (!pv) return; pv.className = "pvbox" + (grid ? " tall" : "");
-    const dispW = pv.clientWidth || Math.min(innerWidth, 520) - 24, f = S.set.font || 17;
-    const e = this.eye, cv = renderSmall(this.work, e, (ctx, N, sc, pix, k0) => {
-      const h = drawSentence(ctx, N, DISC_TEXT, f, sc, predistortFor(k0, f * sc, pix), true);
-      if (grid) { ctx.fillStyle = "#000"; const st = Math.round(f * sc * 0.9), lw = Math.max(1, Math.round(f * sc / 12)), g0 = Math.round(h + f * sc * 0.6), g1 = Math.round(N * 0.74);
-        for (let x = Math.round(N * 0.05); x < N * 0.95; x += st) ctx.fillRect(x, g0, lw, g1 - g0); for (let y = g0; y < g1; y += st) ctx.fillRect(Math.round(N * 0.05), y, Math.round(N * 0.9), lw); }
-    }, 40, dispW);
-    cv.style.width = "100%"; pv.innerHTML = ""; pv.appendChild(cv);
+};
+
+// ----- RESULT -----
+function showResult() {
+  const r = S.rx, card = (e, name) => `<div class="rcard"><h3>${name}</h3><table class="rtable">
+    <tr><th>Esférico</th><td class="v">${fD(r[e].S)}</td></tr><tr><th>Cilíndrico</th><td class="v">${fD(r[e].C)}</td></tr>
+    <tr><th>Eixo</th><td class="v">${r[e].C ? Math.round(r[e].A) + "°" : "—"}</td></tr></table></div>`;
+  $("resultBox").innerHTML = card("od", "Olho direito (OD)") + card("os", "Olho esquerdo (OE)") +
+    `<p class="note">Medido a ${(distance() * 100).toFixed(0)} cm · idade: ${S.set.ageSet ? "~" + S.set.age + " anos" : "não informada (olho jovem)"}.</p>`;
+}
+
+// ----- USE mode: interactive feed rendered pre-compensated live (camera keeps tracking distance) -----
+const use = {
+  st: { likes: 3, more: 0, chat: [{ s: "Oi! Você chega a que horas amanhã?", me: false }, { s: "Lá pelas 18h30, depois do trabalho.", me: true }, { s: "Combinado. Não esqueça a receita do médico!", me: false }] },
+  y: 0, ver: 0, filter: true,
+  W() { return $("useStage").clientWidth || Math.min(innerWidth, 560); },
+  layout() { const c = this._mc || (this._mc = document.createElement("canvas").getContext("2d")); this.L = layoutUse(c, this.W(), this.st); this.clamp(); },
+  clamp() { this.y = Math.max(0, Math.min(this.y, Math.max(0, this.L.H - this.W()))); },
+  scroll(dy) { this.y += dy; this.clamp(); },
+  enter() {
+    const v = views.use || (views.use = new View(main, null)); v.E = main; v.host = $("useStage"); v.attach(); v.contentKey = ""; v.modelKey = "";
+    this.layout(); Object.assign(main.params, { filter: this.filter, split: false, retina: false }); this.paintToggle();
+    stepper($("useStep"), { label: "Ajuste fino (esférico)", get: () => S.set.useAdj || 0, set: (x) => { S.set.useAdj = x; save(); }, step: 0.25, min: -2, max: 2, fmt: (x) => (x ? fD(x) : "0,00") + " D" });
+    this._info = "";
   },
-  finishEye() {
-    S.rx[this.eye] = { ...this.work[this.eye] }; save();
-    const next = this.eye === "od" ? "os" : null;
-    tune.begin([this.eye], () => {
-      if (next) { this.eye = next; this.step = 1; location.hash = "#discover"; setTimeout(() => { this.step = 1; this.render(); }, 30); }
-      else { if (S.set.manualCm === 40 && !tracker.state.ok) S.set.manualCm = 0; save(); location.hash = "#read"; }
-    });
+  paintToggle() { const b = $("useFilter"); b.textContent = this.filter ? "Filtro LIGADO" : "Filtro DESLIGADO"; b.classList.toggle("primary", this.filter); },
+  tap(x, y) {
+    const it = hitUse(this.L, x, y + this.y); if (!it) return;
+    if (it.id === "like") this.st.likes++; else if (it.id === "more") this.st.more++; else if (it.id === "reply") this.st.chat.push({ s: "Ok, combinado! 👍", me: true });
+    this.ver++; this.layout(); if (it.id === "reply") this.y = this.L.H;   // jump to the new message
+    this.clamp();
+  },
+  info() {
+    const t = `${(distance() * 100).toFixed(0)} cm · ${tracker.state.ok ? "câmera acompanhando" : "sem câmera (22 cm)"} · arraste o texto para rolar`;
+    if (t !== this._info) { this._info = t; $("useInfo").textContent = t; }
   },
 };
-// discovery start() is called on route; keep the eye/step when coming back from tune
-const _start = disc.start.bind(disc);
-disc.start = function () { if (this._resume) { this._resume = false; return; } _start(); };
-const _finish = disc.finishEye.bind(disc);
-disc.finishEye = function () { this._resume = true; _finish(); };
+const useSpec = {
+  kernels: () => { const a = S.set.useAdj || 0; return kernels({ od: { ...S.rx.od, S: S.rx.od.S + a }, os: { ...S.rx.os, S: S.rx.os.S + a } }, autoWeights(), S.set.pupil); },
+  contentKey: () => [Math.round(use.y), use.ver, use.W()].join(),
+  draw: (ctx, N) => drawUse(ctx, N, use.W(), use.y, use.L),
+};
+(function bindUse() {
+  const st = $("useStage"); let y0 = null, moved = 0, last = 0;
+  st.addEventListener("pointerdown", (e) => { y0 = e.clientY; last = e.clientY; moved = 0; st.setPointerCapture?.(e.pointerId); });
+  st.addEventListener("pointermove", (e) => { if (y0 === null) return; const dy = e.clientY - last; last = e.clientY; moved += Math.abs(dy); use.scroll(-dy); });
+  st.addEventListener("pointerup", (e) => { if (y0 !== null && moved < 10) { const r = st.getBoundingClientRect(); use.tap(e.clientX - r.left, e.clientY - r.top); } y0 = null; });
+  st.addEventListener("pointercancel", () => { y0 = null; });
+  st.addEventListener("wheel", (e) => { e.preventDefault(); use.scroll(e.deltaY); }, { passive: false });
+  $("useUp").onclick = () => use.scroll(-use.W() * 0.6); $("useDown").onclick = () => use.scroll(use.W() * 0.6);
+  $("useFilter").onclick = () => { use.filter = !use.filter; if (main) main.params.filter = use.filter; use.paintToggle(); };
+})();
 
 // ----- Settings -----
 function bindSettings() {
   const sync = () => {
     S.set.cardPx = +$("sCard").value; $("cardBar").style.width = S.set.cardPx + "px";
-    S.set.manualCm = +$("sDist").value; $("vDist").textContent = S.set.manualCm ? S.set.manualCm + " cm" : "automática (câmera ou 30 cm)";
+    S.set.manualCm = +$("sDist").value; $("vDist").textContent = S.set.manualCm ? S.set.manualCm + " cm" : "automática (câmera ou 22 cm)";
     if (+$("sAcc").value !== S.set.accom) S.set.ageSet = true; S.set.accom = +$("sAcc").value; $("vAcc").textContent = S.set.accom.toFixed(2) + " D";
     S.set.bias = +$("sBias").value; $("vBias").textContent = "−" + S.set.bias.toFixed(2) + " D";
     S.set.robust = $("fRobust").checked; S.set.rgb = $("fRGB").checked; S.set.pre = $("fPre").checked;
@@ -386,7 +418,7 @@ function bindSettings() {
   for (const id of ["sCard", "sDist", "sAcc", "sBias", "fRobust", "fRGB", "fHDR", "fPre", "res"]) $(id).addEventListener("change", sync);
   $("sCard").addEventListener("input", () => { $("cardBar").style.width = $("sCard").value + "px"; });
   $("calib40").onclick = () => { if (!tracker.state.ok) { alert("Ative a câmera primeiro (tela inicial)."); return; }
-    S.set.calib = S.set.calib * 0.40 / tracker.state.d; tracker.calib = S.set.calib; tracker._dHist = []; save(); alert("Calibrado."); };
+    S.set.calib = S.set.calib * D0 / tracker.state.d; tracker.calib = S.set.calib; tracker._dHist = []; save(); alert("Calibrado."); };
   $("reset").onclick = () => { if (confirm("Apagar grau e ajustes salvos neste aparelho?")) { localStorage.removeItem(KEY); location.reload(); } };
   sync();
 }
@@ -404,7 +436,9 @@ function loop(now) {
       $("readInfo").innerHTML = `Borrão residual (projeto, já com viés −${S.set.bias.toFixed(2)} D) ≈ ${b.D.toFixed(2)} D → ${b.arcmin.toFixed(0)}′ (${b.px.toFixed(0)} px). ${b.D > 2 ? "<b>Acima de ~2 D a tela não recupera letras pequenas — aumente a fonte/brilho.</b>" : b.D < 0.25 ? "Quase sem borrão nesta distância." : "Faixa onde a pré-compensação ajuda (~1 linha)."} Iterações: ${main.iters}${views.read.photo ? " · <a href='#' id='backText'>voltar ao texto</a>" : ""}`;
       const bt = $("backText"); if (bt) bt.onclick = (e) => { e.preventDefault(); views.read.photo = null; views.read.contentKey = ""; }; } }
     if (main && screen === "chart") views.chart.tick(chartSpec, now);
-  } catch (e) { console.error(e); $("readInfo").textContent = "Erro: " + e; }
+    if (main && screen === "discover" && disc.hasBox()) views.test.tick(testSpec, now);
+    if (main && screen === "use" && views.use) { views.use.tick(useSpec, now); use.info(); }
+  } catch (e) { console.error(e); }
   requestAnimationFrame(loop);
 }
 
@@ -412,9 +446,10 @@ function readTips() {
   const t = tracker.state, tips = ["☀️ <b>Aumente o brilho da tela ao máximo</b> (pupila menor = imagem mais nítida; o site não consegue fazer isso por você)."];
   if (main?.params.filter) tips.push("Use <b>fundo claro com texto escuro</b> — o filtro funciona melhor assim" + (caps.hdr ? " (e é o que aproveita a folga HDR)." : "."));
   if (S.set.manualCm > 0) tips.push(`Distância fixa em ${S.set.manualCm} cm — mantenha o celular nessa distância (régua).`);
-  else if (t.ok && S.set.calib === 1) tips.push("📏 <b>Calibre a distância</b>: em Ajustes, segure a 40 cm (régua) e toque “Estou exatamente a 40 cm”. Erro de distância piora o resultado.");
-  else if (!t.ok) tips.push("Sem câmera: assumindo 30 cm. Defina a distância em Ajustes ou ative a câmera.");
+  else if (t.ok && S.set.calib === 1) tips.push("📏 <b>Calibre a distância</b>: em Ajustes, segure a 22 cm (um palmo, régua) e toque “Calibrar distância do rosto”. Erro de distância piora o resultado.");
+  else if (!t.ok) tips.push("Sem câmera: assumindo 22 cm (um palmo). Mantenha essa distância ou ative a câmera.");
   return tips.map(x => `<li>${x}</li>`).join("");
 }
+Object.assign(window.__vc, { use, disc });
 route(); updateBadge(); requestAnimationFrame(loop); initHDR();
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});

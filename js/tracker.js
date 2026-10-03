@@ -8,8 +8,8 @@ const MODEL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/f
 
 export class Tracker {
   constructor() {
-    this.state = { ok: false, source: "padrão 30 cm", d: 0.30, yaw: 0, pitch: 0, roll: 0, rightOpen: true, leftOpen: true, fps: 0 };
-    this.hfovDeg = 60; this.calib = 1.0; this.fallback = 0.30; this._dHist = [];
+    this.state = { ok: false, source: "padrão 22 cm", d: 0.22, yaw: 0, pitch: 0, roll: 0, rightOpen: true, leftOpen: true, fps: 0 };
+    this.hfovDeg = 60; this.calib = 1.0; this.fallback = 0.22; this._dHist = [];
     this.onUpdate = () => {};
   }
   async start(videoEl) {
@@ -24,7 +24,7 @@ export class Tracker {
       this.video = videoEl; this.running = true; this._loop();
       return true;
     } catch (e) {
-      this.state = { ...this.state, ok: false, source: "padrão 30 cm (câmera indisponível)", d: this.fallback, err: String(e) };
+      this.state = { ...this.state, ok: false, source: "padrão 22 cm (câmera indisponível)", d: this.fallback, err: String(e) };
       this.onUpdate(this.state); return false;
     }
   }
