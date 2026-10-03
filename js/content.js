@@ -40,12 +40,15 @@ export function drawReading(ctx, N, o) {
   if (o.split) { ctx.fillStyle = "#fff"; ctx.fillRect(N / 2 - 2, 0, 4, N); }
 }
 
-export function drawSentence(ctx, N, text, fontCss, scale, pd) {
+export const DISC_TEXT = "O rato roeu a roupa do rei de Roma. Quando a gente lê no celular sem os óculos, as letras pequenas ficam borradas e cansam a vista. Deslize até estas linhas ficarem o mais nítidas possível.";
+// top=true: text starts at the top margin (the preview box crops the lower part); returns y after last line
+export function drawSentence(ctx, N, text, fontCss, scale, pd, top = false) {
   ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, N, N); ctx.fillStyle = "#000";
   const fpx = fontCss * scale; ctx.font = `400 ${fpx}px ${FONT}`;
   const lines = wrap(ctx, text, N * 0.9);
-  let y = N / 2 - (lines.length - 1) * fpx * 0.67 + fpx * 0.35;
-  for (const l of lines) { drawLine(ctx, l, N * 0.05, y, pd); y += fpx * 1.35; }
+  let y = top ? Math.round(N * 0.05) + fpx : N / 2 - (lines.length - 1) * fpx * 0.67 + fpx * 0.35;
+  for (const l of lines) { if (top && y > N * 0.92) break; drawLine(ctx, l, N * 0.05, y, pd); y += fpx * 1.35; }
+  return y - fpx * 1.35;
 }
 
 const SLOAN = "CDHKNORSVZ";

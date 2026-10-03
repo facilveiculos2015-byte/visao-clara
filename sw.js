@@ -1,5 +1,5 @@
 // App-shell cache (network-first for our files so updates arrive; cache-first for the CDN detector/model).
-const V = "vc-v4";
+const V = "vc-v5";
 const SHELL = ["./", "index.html", "css/app.css", "js/app.js", "js/gpu.js", "js/optics.js", "js/content.js", "js/tracker.js", "js/methods.js", "js/hdr.js", "js/cpu.js", "manifest.webmanifest", "icons/icon-192.png", "icons/icon-512.png"];
 self.addEventListener("install", (e) => { e.waitUntil(caches.open(V).then(c => c.addAll(SHELL))); self.skipWaiting(); });
 self.addEventListener("activate", (e) => { e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== V).map(k => caches.delete(k))))); self.clients.claim(); });

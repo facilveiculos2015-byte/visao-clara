@@ -31,3 +31,4 @@ select{font-size:16px;padding:6px;border-radius:8px;border:1px solid #bbb;backgr
 .expect{margin:10px 0;font-size:14px}.ok{color:#0a7a2f}.bad{color:#b00}
 .big{font-size:20px;font-weight:700;text-align:center;margin:8px 0}
 .tips{margin:6px 0 0;padding-left:18px;font-size:13px;line-height:1.35}.tips li{margin:3px 0}
+.pvbox{position:relative;overflow:hidden;aspect-ratio:2/1;background:#fff;border-radius:8px;border:1px solid #ddd}.pvbox.tall{aspect-ratio:1/0.8}.pvbox canvas{display:block;width:100%;height:auto}

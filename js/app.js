@@ -4,16 +4,17 @@ import { WebGPUPresenter } from "./hdr.js";
 import { CPUEngine } from "./cpu.js";
 import { Tracker } from "./tracker.js";
 import { nearRx, taboToScreen, blurInfo } from "./optics.js";
-import { drawReading, drawSentence, drawChart, chartRows, PARAGRAPH, SENTENCE } from "./content.js";
+import { drawReading, drawSentence, drawChart, chartRows, PARAGRAPH, SENTENCE, DISC_TEXT } from "./content.js";
 
 // ---------------- persisted state ----------------
 const KEY = "visaoclara.v1";
 const DEF = { rx: { od: { S: 0, C: 0, A: 0 }, os: { S: 0, C: 0, A: 0 } },
-  set: { cardPx: 325, manualCm: 0, calib: 1, accom: 0, robust: false, rgb: false, hdr: true, pre: false, res: 1024,
-         pupil: 4, K: 0.01, b: 0.6, font: 17, method: "fista", iters: 30, edrH: 2, bias: 0.10 }, chartLog: [], v: 3 };
+  set: { cardPx: 325, manualCm: 0, calib: 1, accom: 3, robust: false, rgb: false, hdr: true, pre: false, res: 1024,
+         pupil: 4, K: 0.01, b: 0.6, font: 17, method: "fista", iters: 30, edrH: 2, bias: 0.10, ageSet: false }, chartLog: [], v: 4 };
 let S = JSON.parse(JSON.stringify(DEF));
-try { const j = JSON.parse(localStorage.getItem(KEY)); if (j) { const old = (j.v || 1) < 3; S = { ...S, ...j, set: { ...S.set, ...j.set }, rx: { ...S.rx, ...j.rx }, v: 3 };
-  if (old) Object.assign(S.set, { robust: false, iters: 30, edrH: 2, bias: 0.10, hdr: true }); } } catch (e) {}
+try { const j = JSON.parse(localStorage.getItem(KEY)); if (j) { const old = (j.v || 1) < 3, old4 = (j.v || 1) < 4; S = { ...S, ...j, set: { ...S.set, ...j.set }, rx: { ...S.rx, ...j.rx }, v: 4 };
+  if (old) Object.assign(S.set, { robust: false, iters: 30, edrH: 2, bias: 0.10, hdr: true });
+  if (old4 && !S.set.ageSet) S.set.accom = 3; } } catch (e) {}
 const save = () => localStorage.setItem(KEY, JSON.stringify(S));
 const $ = (id) => document.getElementById(id);
 const cssMM = () => 53.98 / S.set.cardPx;     // card SHORT side (fits a phone in portrait)
@@ -99,7 +100,10 @@ function applyParams(E) {
   Object.assign(E.params, { K: S.set.K, b: S.set.b, rgb: S.set.rgb, method: S.set.method, hi: E.hdr ? S.set.edrH : 1.0, maxIters: S.set.iters });
 }
 // kernels: list of (eye x distance) PSF models with weights (joint least squares)
-function kernels(rxByEye, weights, pupil) {
+// capFontCss: cap the design defocus so the blur disc stays <= CAP_F x font height (text views);
+// beyond that pre-compensation only makes halos (sim: ~chance at >=2 D). Chart passes Infinity.
+const CAP_F = 0.6;
+function kernels(rxByEye, weights, pupil, capFontCss = S.set.font || 17) {
   const d0 = distance(), t = tracker.state, ks = [];
   const ds = S.set.robust ? [[d0, 0.5], [d0 - 0.03, 0.25], [d0 + 0.03, 0.25]] : [[d0, 1]];
   const eyes = Object.keys(weights).filter(e => weights[e] > 0).sort((a, b) => weights[b] - weights[a]);
@@ -108,9 +112,16 @@ function kernels(rxByEye, weights, pupil) {
     // (W5) conservative design: assume slightly LESS defocus than estimated (too much is worse than none)
     const M = n.S + n.C / 2, bias = S.set.bias || 0;
     n.S -= Math.sign(M) * Math.min(Math.abs(M), bias);
+    const Mmax = Math.max(Math.abs(n.S), Math.abs(n.S + n.C)), cap = CAP_F * capFontCss * cssMM() / (pupil * d);
+    if (Mmax > cap) { const f = cap / Mmax; n.S *= f; n.C *= f; }
     ks.push({ S: n.S, C: n.C, axisScreen: taboToScreen(n.A), d, pupil, yaw: t.ok ? t.yaw : 0, pitch: t.ok ? t.pitch : 0, roll: t.ok ? t.roll : 0, w: w * weights[e], eye: e });
   }
   return ks;
+}
+// contrast target: full contrast when there is (almost) nothing to correct, S.set.b from 0.75 D up
+function bFor(ks) {
+  const D = Math.max(...ks.map(k => Math.max(Math.abs(k.S), Math.abs(k.S + k.C))));
+  return Math.round((1 - (1 - S.set.b) * Math.min(1, D / 0.75)) * 20) / 20;
 }
 function autoWeights() {
   const t = tracker.state;
@@ -137,7 +148,7 @@ class View {
   scale() { const w = this.E.displayCanvas.getBoundingClientRect().width || Math.min(innerWidth, 520); return this.E.N / w; }
   tick(spec, now) {
     const E = this.E; applyParams(E);
-    const ks = spec.kernels();
+    const ks = spec.kernels(); E.params.b = bFor(ks);
     const mk = q(ks) + S.set.rgb;
     if (mk !== this.modelKey && now - this.lastModel > 250) {
       this.modelKey = mk; this.lastModel = now; E.setModel(ks, this.pixMM()); this.dirty = true;
@@ -223,7 +234,7 @@ bindRead();
 // ----- Chart -----
 let rows = chartRows(7);
 const chartSpec = {
-  kernels: () => kernels(S.rx, autoWeights(), S.set.pupil),
+  kernels: () => kernels(S.rx, autoWeights(), S.set.pupil, Infinity),
   contentKey: () => [Math.round(distance() * 100), S.set.cardPx].join(),
   draw: (ctx, N, scale, pixMM) => { chartSpec.shown = drawChart(ctx, N, distance(), pixMM, rows); setTimeout(renderChartChips, 0); },
 };
@@ -236,14 +247,15 @@ function renderChartChips() {
 for (const id of ["cFilter", "cRetina"]) $(id).addEventListener("input", () => { if (main) Object.assign(main.params, { filter: $("cFilter").checked, retina: $("cRetina").checked }); });
 
 // ----- small-engine renders (discovery preview + fine-tune variants) -----
-function renderSmall(rxByEye, eye, drawFn, iters = 40) {
-  const E = small, v = new View(E, null); applyParams(E);
-  const pix = cssMM() * (Math.min(innerWidth, 520) * 0.48) / E.N, sc = E.N / (Math.min(innerWidth, 520) * 0.48);
-  const ks = kernels(rxByEye, { [eye]: 1 }, S.set.pupil);
+// dispW = CSS width at which the result canvas will be shown (sets pixel pitch and text scale)
+function renderSmall(rxByEye, eye, drawFn, iters = 40, dispW = Math.min(innerWidth, 520) * 0.48) {
+  const E = small; applyParams(E);
+  const pix = cssMM() * dispW / E.N, sc = E.N / dispW;
+  const ks = kernels(rxByEye, { [eye]: 1 }, S.set.pupil); E.params.b = bFor(ks);
   const c = document.createElement("canvas"); c.width = c.height = E.N; drawFn(c.getContext("2d"), E.N, sc, pix, ks[0]);
   E.params.split = false; E.params.filter = caps.engine !== "off"; E.params.retina = false;
   E.setTarget(c, false); E.setModel(ks, pix); E.retarget(); E.iterate(Math.min(iters, E.maxIters())); E.render();
-  E._verified = ""; if (!verify(E) && small !== E) return renderSmall(rxByEye, eye, drawFn, iters);
+  E._verified = ""; if (!verify(E) && small !== E) return renderSmall(rxByEye, eye, drawFn, iters, dispW);
   const out = document.createElement("canvas"); out.width = out.height = E.N; out.getContext("2d").drawImage(E.canvas, 0, 0); return out;
 }
 
@@ -265,7 +277,7 @@ const tune = {
     const one = (i) => {
       if (token !== this._tok || i >= cands.length) return;
       if (i === 0) box.innerHTML = "";
-      const cv = renderSmall({ [e]: cands[i] }, e, (ctx, N, sc, pix, k0) => drawSentence(ctx, N, SENTENCE, 15, sc, predistortFor(k0, 15 * sc, pix)), 25);
+      const cv = renderSmall({ [e]: cands[i] }, e, (ctx, N, sc, pix, k0) => drawSentence(ctx, N, SENTENCE, 15, sc, predistortFor(k0, 15 * sc, pix), true), 25);
       cv.onclick = () => this.pick(i); cv.setAttribute("aria-label", `versão ${i + 1}`); box.appendChild(cv);
       setTimeout(() => one(i + 1), 16);   // yield to the UI between variants
     };
@@ -293,9 +305,11 @@ const disc = {
       box.innerHTML = `<p>Segure o celular a <b>40 cm</b> dos olhos (um palmo e meio). ${tracker.state.ok ? "" : "Sem câmera: use uma régua."}</p>
         <p class="big" id="dLive"></p>
         <label class="row">Sua idade <select id="age"><option value="">—</option>${[15,20,25,30,35,40,45,50,55,60,65,70].map(a => `<option>${a}</option>`).join("")}</select></label>
-        <p class="small">A idade estima quanto o olho ainda foca de perto (acomodação). Abaixo de ~40 anos o olho compensa sozinho parte do grau.</p>
+        <p class="small">A idade estima quanto o olho ainda foca de perto (acomodação). Sem idade, assumimos olho jovem (foca bem de perto). Acima de ~45 anos informe a idade.</p>
         <button class="btn primary" id="dGo">Estou a 40 cm</button>`;
-      $("age").onchange = () => { const a = +$("age").value; if (a) { S.set.accom = Math.max(0, 0.5 * (15 - 0.25 * a)); save(); } };
+      if (S.set.ageSet && S.set.age) $("age").value = String(S.set.age);
+      $("age").onchange = () => { const a = +$("age").value;   // no age -> normal (young) accommodation 3 D
+        if (a) Object.assign(S.set, { accom: Math.max(0, 0.5 * (15 - 0.25 * a)), ageSet: true, age: a }); else Object.assign(S.set, { accom: 3, ageSet: false, age: 0 }); save(); };
       const live = () => { const el = $("dLive"); if (!el) return; const d = distance(); const ok = Math.abs(d - 0.40) <= 0.03;
         el.innerHTML = tracker.state.ok ? `<span class="${ok ? "ok" : "bad"}">${(d * 100).toFixed(0)} cm</span>` : "câmera desligada"; if (screen === "discover" && this.step === 0) requestAnimationFrame(live); };
       live();
@@ -330,12 +344,15 @@ const disc = {
       $("dGo").onclick = () => this.finishEye();
     }
   },
-  preview(grid = false) {
+  preview(grid = false) {   // phone-size text (17 px CSS) filling a cropped box; shown at the real width
+    const pv = $("pv"); if (!pv) return; pv.className = "pvbox" + (grid ? " tall" : "");
+    const dispW = pv.clientWidth || Math.min(innerWidth, 520) - 24, f = S.set.font || 17;
     const e = this.eye, cv = renderSmall(this.work, e, (ctx, N, sc, pix, k0) => {
-      drawSentence(ctx, N, SENTENCE, 15, sc, predistortFor(k0, 15 * sc, pix));
-      if (grid) { ctx.fillStyle = "#000"; for (let x = 40; x < N - 40; x += 28) ctx.fillRect(x, N * 0.72, 2, N * 0.22); for (let y = N * 0.72; y < N * 0.94; y += 28) ctx.fillRect(40, y, N - 80, 2); }
-    });
-    cv.style.width = "100%"; const pv = $("pv"); if (pv) { pv.innerHTML = ""; pv.appendChild(cv); }
+      const h = drawSentence(ctx, N, DISC_TEXT, f, sc, predistortFor(k0, f * sc, pix), true);
+      if (grid) { ctx.fillStyle = "#000"; const st = Math.round(f * sc * 0.9), lw = Math.max(1, Math.round(f * sc / 12)), g0 = Math.round(h + f * sc * 0.6), g1 = Math.round(N * 0.74);
+        for (let x = Math.round(N * 0.05); x < N * 0.95; x += st) ctx.fillRect(x, g0, lw, g1 - g0); for (let y = g0; y < g1; y += st) ctx.fillRect(Math.round(N * 0.05), y, Math.round(N * 0.9), lw); }
+    }, 40, dispW);
+    cv.style.width = "100%"; pv.innerHTML = ""; pv.appendChild(cv);
   },
   finishEye() {
     S.rx[this.eye] = { ...this.work[this.eye] }; save();
@@ -357,7 +374,7 @@ function bindSettings() {
   const sync = () => {
     S.set.cardPx = +$("sCard").value; $("cardBar").style.width = S.set.cardPx + "px";
     S.set.manualCm = +$("sDist").value; $("vDist").textContent = S.set.manualCm ? S.set.manualCm + " cm" : "automática (câmera ou 30 cm)";
-    S.set.accom = +$("sAcc").value; $("vAcc").textContent = S.set.accom.toFixed(2) + " D";
+    if (+$("sAcc").value !== S.set.accom) S.set.ageSet = true; S.set.accom = +$("sAcc").value; $("vAcc").textContent = S.set.accom.toFixed(2) + " D";
     S.set.bias = +$("sBias").value; $("vBias").textContent = "−" + S.set.bias.toFixed(2) + " D";
     S.set.robust = $("fRobust").checked; S.set.rgb = $("fRGB").checked; S.set.pre = $("fPre").checked;
     const hdrWas = S.set.hdr, resWas = S.set.res; S.set.hdr = $("fHDR").checked; S.set.res = +$("res").value;
