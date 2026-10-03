@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0b3d5c">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Visão Clara">
+<meta name="description" content="Demonstração de pré-compensação óptica da tela para ler sem óculos. Não substitui exame oftalmológico.">
+<title>Visão Clara — leitura sem óculos (demo)</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<header class="top"><a href="#home" class="brand">👓 Visão Clara</a><span id="distBadge" class="badge">30 cm (padrão)</span></header>
+
+<main>
+<section data-screen="home">
+  <h1>Ler a tela sem óculos</h1>
+  <p class="lead">A tela é pré-distorcida para o seu grau, sua distância e seu ângulo de visão, de modo que a imagem que se forma na sua retina fique mais nítida.</p>
+  <div class="warn"><b>Não substitui exame oftalmológico.</b> Demonstração experimental; não é receita e não substitui óculos ou lentes.</div>
+  <div class="btns">
+    <a class="btn primary" href="#rx">Já sei meu grau</a>
+    <a class="btn" href="#discover">Descobrir na tela</a>
+    <a class="btn" href="#read">Ler (original | pré-compensado)</a>
+    <a class="btn" href="#chart">Teste de letras pequenas (ETDRS)</a>
+    <a class="btn ghost" href="#settings">Ajustes e calibração</a>
+  </div>
+  <button id="camBtn" class="btn ghost">📷 Ativar câmera (medir distância)</button>
+  <p class="small" id="camInfo">A câmera frontal só mede distância e posição dos olhos, tudo no aparelho. Nenhuma imagem é enviada.</p>
+  <details class="expect"><summary>O que esperar (honestamente)</summary>
+    <p>Simulações (ver repositório): com borrão residual de <b>0,5–1,5 D</b> e pupila pequena, ganho típico de <b>≈1 linha</b> de acuidade. Acima de ~2 D as letras pequenas caem abaixo do primeiro “zero” óptico do olho e a tela não consegue recuperá-las; miopia alta (−6 D) a 40 cm está muito além do recuperável. Astigmatismo e presbiopia leve são os casos que mais se beneficiam. Mais brilho na tela (pupila menor) e fonte maior ajudam muito.</p>
+  </details>
+</section>
+
+<section data-screen="rx">
+  <h2>Meu grau</h2>
+  <div class="warn small">Não substitui exame oftalmológico.</div>
+  <div class="rxgrid">
+    <div></div><b>Esférico</b><b>Cilíndrico</b><b>Eixo</b>
+    <b>OD</b><select id="odS"></select><select id="odC"></select><select id="odA"></select>
+    <b>OE</b><select id="osS"></select><select id="osC"></select><select id="osA"></select>
+  </div>
+  <p class="small">OD = olho direito, OE (OS) = olho esquerdo. Use os valores da receita para longe. Eixo em graus (0–180).</p>
+  <div class="btns">
+    <button class="btn primary" id="rxApply">Aplicar e ler</button>
+    <button class="btn" id="rxTune">Aplicar e ajuste fino (3 rodadas)</button>
+  </div>
+</section>
+
+<section data-screen="discover">
+  <h2>Descobrir na tela</h2>
+  <div class="warn small">Não substitui exame oftalmológico. Resultado é uma estimativa para leitura nesta distância.</div>
+  <div id="discStep"></div>
+</section>
+
+<section data-screen="tune">
+  <h2>Ajuste fino <span id="tuneRound"></span></h2>
+  <p class="small" id="tuneEye"></p>
+  <p>Toque na versão <b>mais nítida</b>.</p>
+  <div class="variants" id="variants"></div>
+  <button class="btn ghost" id="tuneNone">Nenhuma é melhor</button>
+</section>
+
+<section data-screen="read">
+  <div class="stage" id="stageRead"></div>
+  <div class="controls">
+    <label class="row"><input type="checkbox" id="tFilter" checked> Filtro em tempo real</label>
+    <label class="row"><input type="checkbox" id="tSplit" checked> Lado a lado (esq. original | dir. pré-comp.)</label>
+    <label class="row"><input type="checkbox" id="tRetina"> Simular minha retina (para quem enxerga bem)</label>
+    <label class="row">Método <select id="method"><option value="fista">Otimização com limites (FISTA)</option><option value="wiener">Wiener + limite</option></select></label>
+    <label class="sl">K (Wiener/inicialização) <input type="range" id="sK" min="-3" max="-0.5" step="0.1" value="-2"><span id="vK"></span></label>
+    <label class="sl">Contraste alvo <input type="range" id="sB" min="0.3" max="1" step="0.05" value="0.8"><span id="vB"></span></label>
+    <label class="sl">Pupila (mm) <input type="range" id="sP" min="2" max="7" step="0.25" value="4"><span id="vP"></span></label>
+    <label class="sl">Fonte (pt) <input type="range" id="sF" min="11" max="34" step="1" value="17"><span id="vF"></span></label>
+    <label class="row">Foto (só canal Y) <input type="file" id="photo" accept="image/*"></label>
+    <p class="small" id="readInfo"></p>
+  </div>
+</section>
+
+<section data-screen="chart">
+  <div class="stage" id="stageChart"></div>
+  <div class="controls">
+    <label class="row"><input type="checkbox" id="cFilter" checked> Pré-compensação ligada</label>
+    <label class="row"><input type="checkbox" id="cRetina"> Simular minha retina</label>
+    <p class="small">Tamanhos angulares reais para a distância atual (logMAR 1,0 → 0,0; 0,0 = 20/20). Toque na menor linha que você lê:</p>
+    <div id="chartRows" class="chips"></div>
+    <p class="small" id="chartLog"></p>
+  </div>
+</section>
+
+<section data-screen="settings">
+  <h2>Ajustes e calibração</h2>
+  <h3>Tamanho real da tela</h3>
+  <p class="small">Encoste um cartão de crédito (85,6 mm) e ajuste a barra até ter a mesma largura.</p>
+  <div id="cardBar" class="cardbar"></div>
+  <input type="range" id="sCard" min="200" max="420" step="1" value="320">
+  <h3>Distância</h3>
+  <label class="sl">Distância manual (cm, 0 = automática) <input type="range" id="sDist" min="0" max="80" step="1" value="0"><span id="vDist"></span></label>
+  <button class="btn ghost" id="calib40">Estou exatamente a 40 cm (régua) → calibrar câmera</button>
+  <label class="sl">Acomodação disponível (D) <input type="range" id="sAcc" min="0" max="4" step="0.25" value="0"><span id="vAcc"></span></label>
+  <p class="small">0 = presbiopia (pior caso). Jovens acomodam e veem de perto sem esforço.</p>
+  <h3>Recursos avançados</h3>
+  <label class="row"><input type="checkbox" id="fRobust" checked> Otimizar para faixa de distância (±3 cm)</label>
+  <label class="row"><input type="checkbox" id="fRGB"> PSF por canal R/G/B (aberração cromática)</label>
+  <label class="row"><input type="checkbox" id="fHDR" checked> Usar folga HDR/EDR acima do branco (se suportado)</label>
+  <label class="row"><input type="checkbox" id="fPre"> Pré-distorção vetorial dos glifos (experimental — piorou na simulação)</label>
+  <label class="row">Resolução de processamento <select id="res"><option value="1024">1024 (melhor)</option><option value="512">512 (mais rápido)</option></select></label>
+  <p class="small" id="caps"></p>
+  <button class="btn ghost" id="reset">Apagar meus dados</button>
+</section>
+</main>
+
+<footer class="disc">Não substitui exame oftalmológico. Demonstração experimental — consulte um oftalmologista.</footer>
+<video id="cam" playsinline muted style="display:none"></video>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
