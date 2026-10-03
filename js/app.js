@@ -1,4 +1,5 @@
 import { Engine } from "./gpu.js";
+import { METHODS, methodById } from "./methods.js";
 import { Tracker } from "./tracker.js";
 import { nearRx, taboToScreen, blurInfo } from "./optics.js";
 import { drawReading, drawSentence, drawChart, chartRows, PARAGRAPH, SENTENCE } from "./content.js";
@@ -7,7 +8,7 @@ import { drawReading, drawSentence, drawChart, chartRows, PARAGRAPH, SENTENCE } 
 const KEY = "visaoclara.v1";
 const DEF = { rx: { od: { S: 0, C: 0, A: 0 }, os: { S: 0, C: 0, A: 0 } },
   set: { cardPx: 325, manualCm: 0, calib: 1, accom: 0, robust: true, rgb: false, hdr: true, pre: false, res: 1024,
-         pupil: 4, K: 0.01, b: 0.8, font: 17, method: "fista" }, chartLog: [] };
+         pupil: 4, K: 0.01, b: 0.6, font: 17, method: "fista" }, chartLog: [] };
 let S = JSON.parse(JSON.stringify(DEF));
 try { const j = JSON.parse(localStorage.getItem(KEY)); if (j) S = { ...S, ...j, set: { ...S.set, ...j.set }, rx: { ...S.rx, ...j.rx } }; } catch (e) {}
 const save = () => localStorage.setItem(KEY, JSON.stringify(S));
@@ -101,7 +102,8 @@ class View {
     if (E.params.b !== this._b || E.params.K !== this._K || E.params.rgb !== this._rgb) { this._b = E.params.b; this._K = E.params.K; this._rgb = E.params.rgb; E.retarget(); this.dirty = true; }
     const P = E.params, flags = [P.filter, P.split, P.retina, P.method].join();
     if (flags !== this._flags) { this._flags = flags; this.dirty = true; }
-    if (P.method === "fista" && E.iters < (spec.maxIters || 60)) { E.iterate(spec.itPerFrame || (E.N > 512 ? 2 : 4)); this.dirty = true; }
+    if (P.method !== this._method) { this._method = P.method; E.method.init(E); this.dirty = true; }
+    if (E.iters < E.method.maxIters) { E.iterate(spec.itPerFrame || (E.N > 512 ? 2 : 4)); this.dirty = true; }
     if (this.dirty) { E.render(); this.dirty = false; }
   }
 }
@@ -153,6 +155,7 @@ function bindRead() {
     if (main) Object.assign(main.params, { filter: $("tFilter").checked, split: $("tSplit").checked, retina: $("tRetina").checked });
     save();
   };
+  $("method").innerHTML = METHODS.map(m => `<option value="${m.id}">${m.label}</option>`).join("");
   $("sK").value = Math.log10(S.set.K); $("sB").value = S.set.b; $("sP").value = S.set.pupil; $("sF").value = S.set.font; $("method").value = S.set.method;
   for (const id of ["sK", "sB", "sP", "sF", "method", "tFilter", "tSplit", "tRetina"]) $(id).addEventListener("input", sync);
   $("photo").onchange = async (e) => { const f = e.target.files[0]; if (!f) return; views.read.photo = await createImageBitmap(f); views.read.contentKey = ""; };
@@ -182,7 +185,7 @@ function renderSmall(rxByEye, eye, drawFn, iters = 40) {
   const ks = kernels(rxByEye, { [eye]: 1 }, S.set.pupil);
   const c = document.createElement("canvas"); c.width = c.height = E.N; drawFn(c.getContext("2d"), E.N, sc, pix, ks[0]);
   E.params.split = false; E.params.filter = true; E.params.retina = false;
-  E.setTarget(c, false); E.setModel(ks, pix); E.retarget(); if (E.params.method === "fista") E.iterate(iters); E.render();
+  E.setTarget(c, false); E.setModel(ks, pix); E.retarget(); E.iterate(Math.min(iters, E.method.maxIters)); E.render();
   const out = document.createElement("canvas"); out.width = out.height = E.N; out.getContext("2d").drawImage(E.canvas, 0, 0); return out;
 }
 
@@ -200,13 +203,15 @@ const tune = {
     $("tuneRound").textContent = `(rodada ${this.round}/3)`;
     $("tuneEye").textContent = `${e === "od" ? "Olho DIREITO" : "Olho ESQUERDO"} — feche ou cubra o outro olho. Atual: ${fD(S.rx[e].S)} ${fD(S.rx[e].C)} × ${S.rx[e].A}°`;
     const box = $("variants"); box.innerHTML = "<p class='small'>Calculando…</p>";
-    setTimeout(() => {
-      box.innerHTML = "";
-      this.cands().forEach((rx, i) => {
-        const cv = renderSmall({ [e]: rx }, e, (ctx, N, sc, pix, k0) => drawSentence(ctx, N, SENTENCE, 15, sc, predistortFor(k0, 15 * sc, pix)));
-        cv.onclick = () => this.pick(i); cv.setAttribute("aria-label", `versão ${i + 1}`); box.appendChild(cv);
-      });
-    }, 30);
+    const cands = this.cands(), token = (this._tok = (this._tok || 0) + 1);
+    const one = (i) => {
+      if (token !== this._tok || i >= cands.length) return;
+      if (i === 0) box.innerHTML = "";
+      const cv = renderSmall({ [e]: cands[i] }, e, (ctx, N, sc, pix, k0) => drawSentence(ctx, N, SENTENCE, 15, sc, predistortFor(k0, 15 * sc, pix)), 25);
+      cv.onclick = () => this.pick(i); cv.setAttribute("aria-label", `versão ${i + 1}`); box.appendChild(cv);
+      setTimeout(() => one(i + 1), 16);   // yield to the UI between variants
+    };
+    setTimeout(() => one(0), 30);
   },
   pick(i) {
     const e = this.eyes[this.ei];

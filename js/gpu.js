@@ -7,6 +7,7 @@
 //         Wiener (B T'/(A+K)) as initialiser / fast fallback. Optional per-channel R/G/B.
 //  All maths in linear light; sRGB encode only at display.
 import { PRIMARIES, lca, zernike } from "./optics.js";
+import { methodById } from "./methods.js";
 
 const VS = `#version 300 es
 in vec2 p; void main(){ gl_Position = vec4(p,0.,1.); }`;
@@ -129,7 +130,7 @@ export class Engine {
     this.t.w1 = T(512); this.t.w2 = T(512);   // binned SxS PSFs (S <= 384)
     this.t.ga = T(this.G); this.t.gb = T(this.G); this.t.gc = T(this.G);
     this.xi = 0; this.ai = 0; this.fistaT = 1; this.iters = 0; this.ready = false;
-    this.params = { b: 0.8, mid: 0.5, K: 0.01, hi: 1.0, rgb: false, method: "fista", split: true, filter: true, retina: false, photo: false };
+    this.params = { b: 0.6, mid: 0.5, K: 0.01, hi: 1.0, rgb: false, method: "fista", split: true, filter: true, retina: false, photo: false };
   }
 
   enableHDR() { // (a) HDR/EDR headroom – only where the browser exposes an extended-range WebGL canvas
@@ -232,8 +233,9 @@ export class Engine {
       if (idx === 0) info = { os, S };
     });
     this.ai = ai; this.fistaT = 1; this.iters = 0; this.modelInfo = info;
-    if (this.hasTarget) this._wienerInit();
     this.ready = true;
+    // warm start: keep the current solution when only the PSF changed (pose/distance), restart momentum
+    if (this.hasTarget) { if (this._hasX && this.method.maxIters > 0) { this.fistaT = 1; this.iters = 0; } else this.method.init(this); }
   }
   _clear(t) { const gl = this.gl; gl.bindFramebuffer(gl.FRAMEBUFFER, t.fb); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
     for (let i = 1; i < 6; i++) gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + i, gl.TEXTURE_2D, null, 0);
@@ -250,14 +252,14 @@ export class Engine {
     const img = this.t.imgSrc; img.fb = 0; // mark as texture for run()
     this.run("linearize", [this.t.T, this.t.RGB], { u_img: img, u_N: { i: this.N } });
     this.params.photo = photo;
-    this.hasTarget = true;
+    this.hasTarget = true; this._hasX = false;
     this.retarget();
   }
   retarget() { // contrast target changed (b / mid)
     if (!this.hasTarget) return;
     this.run("packTp", [this.t.tmp], { u_t: this.t.T, u_mid: this.params.mid, u_b: this.params.b });
     this.fft(this.t.tmp, this.t.Tspec, false);
-    if (this.ready) this._wienerInit();
+    if (this.ready) this.method.init(this);
   }
   _a(c) { return this.t["a" + c + this.ai]; }
   _wienerInit() {
@@ -265,12 +267,18 @@ export class Engine {
     this.run("wiener", [this.t.s1, this.t.s2], { u_aR: this._a("R"), u_aG: this._a("G"), u_aB: this._a("B"), u_aL: this._a("L"), u_T: this.t.Tspec, u_K: P.K, u_rgb: rgb });
     this.fft(this.t.s1, this.t.g1, true); if (P.rgb) this.fft(this.t.s2, this.t.g2, true);
     this.run("initX", [this.t["Y" + this.xi], this.t["X" + this.xi]], { u_g1: this.t.g1, u_g2: this.t.g2, u_rgb: rgb, u_hi: P.hi });
-    this.fistaT = 1; this.iters = 0;
+    this.fistaT = 1; this.iters = 0; this._hasX = true;
   }
+  get method() { return methodById(this.params.method); }
   iterate(n) {
-    if (!this.ready || !this.hasTarget || this.params.method !== "fista") return 0;
+    if (!this.ready || !this.hasTarget) return 0;
+    const m = this.method; if (this.iters >= m.maxIters) return 0;
+    for (let k = 0; k < n; k++) m.step(this);
+    return n;
+  }
+  fistaStep() {
     const P = this.params, rgb = { i: P.rgb ? 1 : 0 };
-    for (let k = 0; k < n; k++) {
+    {
       const Y = this.t["Y" + this.xi], X = this.t["X" + this.xi];
       this.run("pack", [this.t.c1, this.t.c2], { u_x: Y, u_rgb: rgb });
       this.fft(this.t.c1, this.t.s1, false); if (P.rgb) this.fft(this.t.c2, this.t.s2, false);
@@ -281,7 +289,6 @@ export class Engine {
       this.run("update", [this.t["Y" + o], this.t["X" + o]], { u_g1: this.t.g1, u_g2: this.t.g2, u_y: Y, u_x: X, u_step: 1.0, u_beta: beta, u_hi: P.hi, u_rgb: rgb });
       this.xi = o; this.iters++;
     }
-    return n;
   }
   render() {
     if (!this.hasTarget) return;
