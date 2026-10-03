@@ -30,3 +30,4 @@ select{font-size:16px;padding:6px;border-radius:8px;border:1px solid #bbb;backgr
 .disc{position:fixed;left:0;right:0;bottom:0;background:#222;color:#fff;font-size:12px;text-align:center;padding:8px 8px calc(8px + env(safe-area-inset-bottom));z-index:9}
 .expect{margin:10px 0;font-size:14px}.ok{color:#0a7a2f}.bad{color:#b00}
 .big{font-size:20px;font-weight:700;text-align:center;margin:8px 0}
+.tips{margin:6px 0 0;padding-left:18px;font-size:13px;line-height:1.35}.tips li{margin:3px 0}

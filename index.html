@@ -67,13 +67,16 @@
 
 <section data-screen="read">
   <div class="stage" id="stageRead"></div>
+  <ul class="tips" id="readTips"></ul>
   <div class="controls">
     <label class="row"><input type="checkbox" id="tFilter" checked> Filtro em tempo real</label>
     <label class="row"><input type="checkbox" id="tSplit" checked> Lado a lado (esq. original | dir. pré-comp.)</label>
     <label class="row"><input type="checkbox" id="tRetina"> Simular minha retina (para quem enxerga bem)</label>
     <label class="row">Método <select id="method"><option value="fista">Otimização com limites (FISTA)</option><option value="wiener">Wiener + limite</option></select></label>
     <label class="sl">K (Wiener/inicialização) <input type="range" id="sK" min="-3" max="-0.5" step="0.1" value="-2"><span id="vK"></span></label>
-    <label class="sl">Contraste alvo <input type="range" id="sB" min="0.3" max="1" step="0.05" value="0.6"><span id="vB"></span></label>
+    <label class="sl">Iterações FISTA (por mudança) <input type="range" id="sI" min="10" max="150" step="5" value="30"><span id="vI"></span></label>
+    <label class="sl">Intensidade EDR (limite acima do branco, só com HDR) <input type="range" id="sH" min="1.25" max="4" step="0.25" value="2"><span id="vH"></span></label>
+    <label class="sl">Contraste alvo (só sem HDR) <input type="range" id="sB" min="0.3" max="1" step="0.05" value="0.6"><span id="vB"></span></label>
     <label class="sl">Pupila (mm) <input type="range" id="sP" min="2" max="7" step="0.25" value="4"><span id="vP"></span></label>
     <label class="sl">Fonte (pt) <input type="range" id="sF" min="11" max="34" step="1" value="17"><span id="vF"></span></label>
     <label class="row">Foto (só canal Y) <input type="file" id="photo" accept="image/*"></label>
@@ -103,10 +106,12 @@
   <button class="btn ghost" id="calib40">Estou exatamente a 40 cm (régua) → calibrar câmera</button>
   <label class="sl">Acomodação disponível (D) <input type="range" id="sAcc" min="0" max="4" step="0.25" value="0"><span id="vAcc"></span></label>
   <p class="small">0 = presbiopia (pior caso). Jovens acomodam e veem de perto sem esforço.</p>
+  <label class="sl">Viés conservador (assumir menos borrão que o medido) <input type="range" id="sBias" min="0" max="0.3" step="0.05" value="0.1"><span id="vBias"></span></label>
+  <p class="small">Projetar para borrão maior que o real deixa a imagem pior que sem correção; por isso o padrão assume 0,10 D a menos.</p>
   <h3>Recursos avançados</h3>
-  <label class="row"><input type="checkbox" id="fRobust" checked> Otimizar para faixa de distância (±3 cm)</label>
+  <label class="row"><input type="checkbox" id="fRobust" checked> Otimizar para faixa de distância (±3 cm) — desligado por padrão: na simulação reduziu o ganho</label>
   <label class="row"><input type="checkbox" id="fRGB"> PSF por canal R/G/B (aberração cromática)</label>
-  <label class="row"><input type="checkbox" id="fHDR" checked> Usar folga HDR/EDR acima do branco (se suportado)</label>
+  <label class="row"><input type="checkbox" id="fHDR" checked> Usar folga HDR/EDR acima do branco (WebGPU estendido, se suportado)</label>
   <label class="row"><input type="checkbox" id="fPre"> Pré-distorção vetorial dos glifos (experimental — piorou na simulação)</label>
   <label class="row">Resolução de processamento <select id="res"><option value="1024">1024 (melhor)</option><option value="512">512 (mais rápido)</option></select></label>
   <p class="small" id="caps"></p>

@@ -1,5 +1,7 @@
 import { Engine } from "./gpu.js";
 import { METHODS, methodById } from "./methods.js";
+import { WebGPUPresenter } from "./hdr.js";
+import { CPUEngine } from "./cpu.js";
 import { Tracker } from "./tracker.js";
 import { nearRx, taboToScreen, blurInfo } from "./optics.js";
 import { drawReading, drawSentence, drawChart, chartRows, PARAGRAPH, SENTENCE } from "./content.js";
@@ -7,10 +9,11 @@ import { drawReading, drawSentence, drawChart, chartRows, PARAGRAPH, SENTENCE } 
 // ---------------- persisted state ----------------
 const KEY = "visaoclara.v1";
 const DEF = { rx: { od: { S: 0, C: 0, A: 0 }, os: { S: 0, C: 0, A: 0 } },
-  set: { cardPx: 325, manualCm: 0, calib: 1, accom: 0, robust: true, rgb: false, hdr: true, pre: false, res: 1024,
-         pupil: 4, K: 0.01, b: 0.6, font: 17, method: "fista" }, chartLog: [] };
+  set: { cardPx: 325, manualCm: 0, calib: 1, accom: 0, robust: false, rgb: false, hdr: true, pre: false, res: 1024,
+         pupil: 4, K: 0.01, b: 0.6, font: 17, method: "fista", iters: 30, edrH: 2, bias: 0.10 }, chartLog: [], v: 3 };
 let S = JSON.parse(JSON.stringify(DEF));
-try { const j = JSON.parse(localStorage.getItem(KEY)); if (j) S = { ...S, ...j, set: { ...S.set, ...j.set }, rx: { ...S.rx, ...j.rx } }; } catch (e) {}
+try { const j = JSON.parse(localStorage.getItem(KEY)); if (j) { const old = (j.v || 1) < 3; S = { ...S, ...j, set: { ...S.set, ...j.set }, rx: { ...S.rx, ...j.rx }, v: 3 };
+  if (old) Object.assign(S.set, { robust: false, iters: 30, edrH: 2, bias: 0.10, hdr: true }); } } catch (e) {}
 const save = () => localStorage.setItem(KEY, JSON.stringify(S));
 const $ = (id) => document.getElementById(id);
 const cssMM = () => 53.98 / S.set.cardPx;     // card SHORT side (fits a phone in portrait)
@@ -33,22 +36,67 @@ $("camBtn").onclick = async () => {
 
 // ---------------- engines ----------------
 let main = null, small = null, caps = {};
+// self-test: light target with dark text, -2 D model, 3 iterations -> output must not be black/NaN
+function selfTest(E) {
+  const N = E.N, c = document.createElement("canvas"); c.width = c.height = N; const x = c.getContext("2d");
+  x.fillStyle = "#fff"; x.fillRect(0, 0, N, N); x.fillStyle = "#000"; x.font = `${N / 10}px sans-serif`; x.fillText("Teste ok", N / 8, N / 2);
+  const P = { ...E.params }; Object.assign(E.params, { split: false, filter: true, retina: false });
+  E.setTarget(c, false); E.setModel([{ S: -2, C: -0.5, axisScreen: 30, roll: 0, d: 0.4, pupil: 4, yaw: 0, pitch: 0, w: 1 }], 0.08);
+  E.iterate(3); E.render(); const r = E.check(); Object.assign(E.params, P); E.hasTarget = false; E.iters = 0; return r;
+}
+function notice(msg) {
+  let n = $("compat"); if (!n) { document.querySelector("main").insertAdjacentHTML("afterbegin", `<div class="warn" id="compat"></div>`); n = $("compat"); }
+  n.innerHTML = msg;
+}
+function useCPU(reason) {
+  if (main?.cpu && small?.cpu) return;
+  console.warn("GPU path failed → CPU fallback:", reason);
+  caps.engine = "cpu"; caps.fallback = reason; caps.hdr = false; caps.hdrMode = "sdr"; caps.hdrReason = "motor CPU (sem HDR)";
+  main = new CPUEngine(document.createElement("canvas"), 512); small = new CPUEngine(document.createElement("canvas"), 256);
+  for (const v of Object.values(views || {})) { v.E = main; v.attach(); v.modelKey = ""; v.contentKey = ""; v._pk = ""; }
+  window.__vc.main = main; window.__vc.small = small;
+  setTimeout(() => notice(`Modo de compatibilidade: a GPU deste aparelho falhou (${reason}). Usando cálculo no processador, com resolução menor.`), 0);
+}
+function cpuFailed(reason) {
+  console.warn("CPU fallback failed too:", reason); caps.engine = "off";
+  for (const E of [main, small]) if (E) E.params.filter = false;
+  notice(`Não foi possível calcular o filtro neste aparelho (${reason}). Mostrando o texto original.`);
+}
+function verify(E) { // called after renders; swaps engine if output is bad
+  if (!E || E._verified === E.iters + ":" + E.ready) return true;
+  E._verified = E.iters + ":" + E.ready;
+  const r = E.check(); if (r.ok) return true;
+  if (E.cpu) cpuFailed(r.reason); else useCPU(r.reason);
+  return false;
+}
 function makeEngines() {
   try {
     const c = document.createElement("canvas"); main = new Engine(c, +S.set.res);
-    caps.hdr = S.set.hdr ? main.enableHDR() : false;
+    caps.hdr = false; caps.hdrReason = S.set.hdr ? "verificando…" : "desligado nos ajustes";
     const c2 = document.createElement("canvas"); small = new Engine(c2, 512, { preserve: true });
-    caps.webgl = true;
-  } catch (e) { caps.webgl = false; caps.err = String(e); }
+    if (/[?&]simnan=1/.test(location.search)) main.simNaN = small.simNaN = true;   // QA: simulate Apple-GPU NaN
+    caps.webgl = true; caps.engine = "webgl2";
+    for (const E of [small, main]) { const r = selfTest(E); if (!r.ok) throw new Error("autoteste da GPU: " + r.reason); }
+  } catch (e) { caps.webgl = false; caps.err = String(e); window.__vc = { S, caps, tracker }; useCPU(String(e.message || e)); }
   caps.dynHigh = matchMedia("(dynamic-range: high)").matches;
   caps.p3 = matchMedia("(color-gamut: p3)").matches;
   caps.cam = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
-  window.__vc = { main, small, S, caps, tracker };
+  window.__vc = { main, small, S, caps, tracker, get engine() { return main?.cpu ? "cpu" : "webgl2"; } };
 }
 makeEngines();
+if (/[?&]forcecpu=1/.test(location.search)) useCPU("forçado por ?forcecpu=1 (teste)");
+async function initHDR() {   // (1) EDR headroom: WebGPU extended canvas first, then WebGL2 extended canvas, else SDR [0,1]
+  if (!main || main.cpu || !S.set.hdr) return;
+  const r = await WebGPUPresenter.create(main.N);
+  if (r.ok) { main.setPresenter(r.presenter); caps.hdr = true; caps.hdrMode = "webgpu"; caps.hdrReason = r.reason; }
+  else if (main.enableHDR()) { caps.hdr = true; caps.hdrMode = "webgl-extended"; caps.hdrReason = r.reason + "; usando canvas WebGL estendido"; }
+  else { caps.hdr = false; caps.hdrMode = "sdr"; caps.hdrReason = r.reason + "; canvas WebGL estendido também indisponível → SDR [0,1]"; }
+  for (const v of Object.values(views)) { v.attach(); v.modelKey = ""; v.contentKey = ""; }
+  showCaps();
+}
 
 function applyParams(E) {
-  Object.assign(E.params, { K: S.set.K, b: S.set.b, rgb: S.set.rgb, method: S.set.method, hi: E.hdr ? 1.6 : 1.0 });
+  Object.assign(E.params, { K: S.set.K, b: S.set.b, rgb: S.set.rgb, method: S.set.method, hi: E.hdr ? S.set.edrH : 1.0, maxIters: S.set.iters });
 }
 // kernels: list of (eye x distance) PSF models with weights (joint least squares)
 function kernels(rxByEye, weights, pupil) {
@@ -57,6 +105,9 @@ function kernels(rxByEye, weights, pupil) {
   const eyes = Object.keys(weights).filter(e => weights[e] > 0).sort((a, b) => weights[b] - weights[a]);
   for (const e of eyes) for (const [d, w] of ds) {
     const n = nearRx(rxByEye[e], d, S.set.accom);
+    // (W5) conservative design: assume slightly LESS defocus than estimated (too much is worse than none)
+    const M = n.S + n.C / 2, bias = S.set.bias || 0;
+    n.S -= Math.sign(M) * Math.min(Math.abs(M), bias);
     ks.push({ S: n.S, C: n.C, axisScreen: taboToScreen(n.A), d, pupil, yaw: t.ok ? t.yaw : 0, pitch: t.ok ? t.pitch : 0, roll: t.ok ? t.roll : 0, w: w * weights[e], eye: e });
   }
   return ks;
@@ -67,7 +118,8 @@ function autoWeights() {
   if (t.ok && t.leftOpen && !t.rightOpen) return { od: 0, os: 1 };
   return { od: 0.5, os: 0.5 };   // both open: binocular compromise
 }
-const q = (k) => JSON.stringify(k.map(x => [x.S.toFixed(2), x.C.toFixed(2), Math.round(x.axisScreen + x.roll), (x.d * 100).toFixed(0), x.pupil, Math.round(x.yaw / 5), Math.round(x.pitch / 5), x.w.toFixed(2)]));
+// PSF recomputed only when vergence changes by ≥0.1 D (1/d quantised), angles ≥5°, etc.
+const q = (k) => JSON.stringify(k.map(x => [x.S.toFixed(2), x.C.toFixed(2), Math.round(x.axisScreen + x.roll), Math.round(10 / x.d), x.pupil, Math.round(x.yaw / 5), Math.round(x.pitch / 5), x.w.toFixed(2)]));
 
 function predistortFor(k, fontPx, pixMM) {
   if (!S.set.pre || !k) return null;
@@ -80,9 +132,9 @@ function predistortFor(k, fontPx, pixMM) {
 // A "view" = engine + how to draw its content + its PSF model
 class View {
   constructor(E, host) { this.E = E; this.host = host; this.contentKey = ""; this.modelKey = ""; this.lastModel = 0; this.photo = null; }
-  attach() { if (this.host && this.E.canvas.parentNode !== this.host) this.host.appendChild(this.E.canvas); }
-  pixMM() { const w = this.E.canvas.getBoundingClientRect().width || Math.min(innerWidth, 520); return cssMM() * w / this.E.N; }
-  scale() { const w = this.E.canvas.getBoundingClientRect().width || Math.min(innerWidth, 520); return this.E.N / w; }
+  attach() { if (!this.host) return; const c = this.E.displayCanvas; if (c.parentNode !== this.host) { this.host.innerHTML = ""; this.host.appendChild(c); } }
+  pixMM() { const w = this.E.displayCanvas.getBoundingClientRect().width || Math.min(innerWidth, 520); return cssMM() * w / this.E.N; }
+  scale() { const w = this.E.displayCanvas.getBoundingClientRect().width || Math.min(innerWidth, 520); return this.E.N / w; }
   tick(spec, now) {
     const E = this.E; applyParams(E);
     const ks = spec.kernels();
@@ -99,18 +151,21 @@ class View {
       spec.draw(ctx, E.N, this.scale(), this.pixMM(), ks[0]);
       E.setTarget(c, !!spec.photo); this.dirty = true;
     }
-    if (E.params.b !== this._b || E.params.K !== this._K || E.params.rgb !== this._rgb) { this._b = E.params.b; this._K = E.params.K; this._rgb = E.params.rgb; E.retarget(); this.dirty = true; }
+    const pk = [E.params.b, E.params.K, E.params.rgb, E.params.hi].join();
+    if (pk !== this._pk) { this._pk = pk; E.retarget(); this.dirty = true; }
+    if (E.params.maxIters !== this._mi) { this._mi = E.params.maxIters; if (E.iters >= E.maxIters()) E.iters = Math.min(E.iters, E.params.maxIters); }
     const P = E.params, flags = [P.filter, P.split, P.retina, P.method].join();
     if (flags !== this._flags) { this._flags = flags; this.dirty = true; }
     if (P.method !== this._method) { this._method = P.method; E.method.init(E); this.dirty = true; }
-    if (E.iters < E.method.maxIters) { E.iterate(spec.itPerFrame || (E.N > 512 ? 2 : 4)); this.dirty = true; }
-    if (this.dirty) { E.render(); this.dirty = false; }
+    if (E.iters < E.maxIters()) { E.iterate(spec.itPerFrame || (E.N > 512 ? 2 : 4)); this.dirty = true; }
+    if (this.dirty) { E.render(); this.dirty = false;
+      if (E.iters >= E.maxIters() || E.iters === 0) verify(E); }
   }
 }
 
 // ---------------- screens ----------------
 let screen = "home";
-const views = {};
+var views = {};
 function route() {
   screen = (location.hash || "#home").slice(1);
   document.querySelectorAll("section").forEach(s => s.classList.toggle("on", s.dataset.screen === screen));
@@ -151,13 +206,15 @@ const readSpec = {
 function bindRead() {
   const sync = () => {
     S.set.K = Math.pow(10, +$("sK").value); S.set.b = +$("sB").value; S.set.pupil = +$("sP").value; S.set.font = +$("sF").value; S.set.method = $("method").value;
+    S.set.iters = +$("sI").value; S.set.edrH = +$("sH").value; $("vI").textContent = S.set.iters + " iterações"; $("vH").textContent = S.set.edrH.toFixed(2) + "× o branco";
     $("vK").textContent = S.set.K.toFixed(3); $("vB").textContent = S.set.b.toFixed(2); $("vP").textContent = S.set.pupil.toFixed(2) + " mm"; $("vF").textContent = S.set.font + " pt";
     if (main) Object.assign(main.params, { filter: $("tFilter").checked, split: $("tSplit").checked, retina: $("tRetina").checked });
     save();
   };
   $("method").innerHTML = METHODS.map(m => `<option value="${m.id}">${m.label}</option>`).join("");
+  $("sI").value = S.set.iters; $("sH").value = S.set.edrH;
   $("sK").value = Math.log10(S.set.K); $("sB").value = S.set.b; $("sP").value = S.set.pupil; $("sF").value = S.set.font; $("method").value = S.set.method;
-  for (const id of ["sK", "sB", "sP", "sF", "method", "tFilter", "tSplit", "tRetina"]) $(id).addEventListener("input", sync);
+  for (const id of ["sK", "sB", "sP", "sF", "sI", "sH", "method", "tFilter", "tSplit", "tRetina"]) $(id).addEventListener("input", sync);
   $("photo").onchange = async (e) => { const f = e.target.files[0]; if (!f) return; views.read.photo = await createImageBitmap(f); views.read.contentKey = ""; };
   sync();
 }
@@ -184,8 +241,9 @@ function renderSmall(rxByEye, eye, drawFn, iters = 40) {
   const pix = cssMM() * (Math.min(innerWidth, 520) * 0.48) / E.N, sc = E.N / (Math.min(innerWidth, 520) * 0.48);
   const ks = kernels(rxByEye, { [eye]: 1 }, S.set.pupil);
   const c = document.createElement("canvas"); c.width = c.height = E.N; drawFn(c.getContext("2d"), E.N, sc, pix, ks[0]);
-  E.params.split = false; E.params.filter = true; E.params.retina = false;
-  E.setTarget(c, false); E.setModel(ks, pix); E.retarget(); E.iterate(Math.min(iters, E.method.maxIters)); E.render();
+  E.params.split = false; E.params.filter = caps.engine !== "off"; E.params.retina = false;
+  E.setTarget(c, false); E.setModel(ks, pix); E.retarget(); E.iterate(Math.min(iters, E.maxIters())); E.render();
+  E._verified = ""; if (!verify(E) && small !== E) return renderSmall(rxByEye, eye, drawFn, iters);
   const out = document.createElement("canvas"); out.width = out.height = E.N; out.getContext("2d").drawImage(E.canvas, 0, 0); return out;
 }
 
@@ -300,14 +358,15 @@ function bindSettings() {
     S.set.cardPx = +$("sCard").value; $("cardBar").style.width = S.set.cardPx + "px";
     S.set.manualCm = +$("sDist").value; $("vDist").textContent = S.set.manualCm ? S.set.manualCm + " cm" : "automática (câmera ou 30 cm)";
     S.set.accom = +$("sAcc").value; $("vAcc").textContent = S.set.accom.toFixed(2) + " D";
+    S.set.bias = +$("sBias").value; $("vBias").textContent = "−" + S.set.bias.toFixed(2) + " D";
     S.set.robust = $("fRobust").checked; S.set.rgb = $("fRGB").checked; S.set.pre = $("fPre").checked;
     const hdrWas = S.set.hdr, resWas = S.set.res; S.set.hdr = $("fHDR").checked; S.set.res = +$("res").value;
     save(); updateBadge();
     if (hdrWas !== S.set.hdr || resWas !== S.set.res) location.reload();
   };
-  $("sCard").value = S.set.cardPx; $("sDist").value = S.set.manualCm; $("sAcc").value = S.set.accom;
+  $("sCard").value = S.set.cardPx; $("sDist").value = S.set.manualCm; $("sAcc").value = S.set.accom; $("sBias").value = S.set.bias;
   $("fRobust").checked = S.set.robust; $("fRGB").checked = S.set.rgb; $("fHDR").checked = S.set.hdr; $("fPre").checked = S.set.pre; $("res").value = S.set.res;
-  for (const id of ["sCard", "sDist", "sAcc", "fRobust", "fRGB", "fHDR", "fPre", "res"]) $(id).addEventListener("change", sync);
+  for (const id of ["sCard", "sDist", "sAcc", "sBias", "fRobust", "fRGB", "fHDR", "fPre", "res"]) $(id).addEventListener("change", sync);
   $("sCard").addEventListener("input", () => { $("cardBar").style.width = $("sCard").value + "px"; });
   $("calib40").onclick = () => { if (!tracker.state.ok) { alert("Ative a câmera primeiro (tela inicial)."); return; }
     S.set.calib = S.set.calib * 0.40 / tracker.state.d; tracker.calib = S.set.calib; tracker._dHist = []; save(); alert("Calibrado."); };
@@ -315,7 +374,7 @@ function bindSettings() {
   sync();
 }
 function showCaps() {
-  $("caps").innerHTML = `WebGL2 float: <b>${caps.webgl ? "sim" : "não"}</b>${caps.err ? " (" + caps.err + ")" : ""} · HDR/EDR no canvas: <b>${caps.hdr ? "sim (folga 1,6×)" : "não suportado — usando [0,1]"}</b>
+  $("caps").innerHTML = `Motor: <b>${main?.cpu ? "CPU (compatibilidade)" : "GPU WebGL2"}</b>${caps.fallback ? " — " + caps.fallback : ""} · WebGL2 float: <b>${caps.webgl ? "sim" : "não"}</b>${caps.err ? " (" + caps.err + ")" : ""} · HDR/EDR: <b>${caps.hdr ? `ATIVO (${caps.hdrMode}, limite ${S.set.edrH}× o branco)` : "inativo — usando [0,1]"}</b> (${caps.hdrReason || ""})
    · tela HDR (CSS): ${caps.dynHigh ? "sim" : "não"} · P3: ${caps.p3 ? "sim" : "não"} · câmera: ${caps.cam ? "sim" : "não"} · mm por px CSS: ${cssMM().toFixed(4)}`;
 }
 bindSettings();
@@ -324,12 +383,21 @@ bindSettings();
 function loop(now) {
   try {
     if (main && screen === "read") { views.read.tick(readSpec, now); const k = views.read.info; if (k) { const b = blurInfo({ S: k.S, C: k.C, A: 0 }, k.pupil, k.d, views.read.pixMM());
-      $("readInfo").innerHTML = `Borrão residual ≈ ${b.D.toFixed(2)} D → ${b.arcmin.toFixed(0)}′ (${b.px.toFixed(0)} px). ${b.D > 2 ? "<b>Acima de ~2 D a tela não recupera letras pequenas — aumente a fonte/brilho.</b>" : b.D < 0.25 ? "Quase sem borrão nesta distância." : "Faixa onde a pré-compensação ajuda (~1 linha)."} Iterações: ${main.iters}${views.read.photo ? " · <a href='#' id='backText'>voltar ao texto</a>" : ""}`;
+      $("readTips").innerHTML = readTips();
+      $("readInfo").innerHTML = `Borrão residual (projeto, já com viés −${S.set.bias.toFixed(2)} D) ≈ ${b.D.toFixed(2)} D → ${b.arcmin.toFixed(0)}′ (${b.px.toFixed(0)} px). ${b.D > 2 ? "<b>Acima de ~2 D a tela não recupera letras pequenas — aumente a fonte/brilho.</b>" : b.D < 0.25 ? "Quase sem borrão nesta distância." : "Faixa onde a pré-compensação ajuda (~1 linha)."} Iterações: ${main.iters}${views.read.photo ? " · <a href='#' id='backText'>voltar ao texto</a>" : ""}`;
       const bt = $("backText"); if (bt) bt.onclick = (e) => { e.preventDefault(); views.read.photo = null; views.read.contentKey = ""; }; } }
     if (main && screen === "chart") views.chart.tick(chartSpec, now);
   } catch (e) { console.error(e); $("readInfo").textContent = "Erro: " + e; }
   requestAnimationFrame(loop);
 }
-if (!caps.webgl) document.querySelector("main").insertAdjacentHTML("afterbegin", `<div class="warn">Este navegador não suporta WebGL2 com float: ${caps.err}</div>`);
-route(); updateBadge(); requestAnimationFrame(loop);
+
+function readTips() {
+  const t = tracker.state, tips = ["☀️ <b>Aumente o brilho da tela ao máximo</b> (pupila menor = imagem mais nítida; o site não consegue fazer isso por você)."];
+  if (main?.params.filter) tips.push("Use <b>fundo claro com texto escuro</b> — o filtro funciona melhor assim" + (caps.hdr ? " (e é o que aproveita a folga HDR)." : "."));
+  if (S.set.manualCm > 0) tips.push(`Distância fixa em ${S.set.manualCm} cm — mantenha o celular nessa distância (régua).`);
+  else if (t.ok && S.set.calib === 1) tips.push("📏 <b>Calibre a distância</b>: em Ajustes, segure a 40 cm (régua) e toque “Estou exatamente a 40 cm”. Erro de distância piora o resultado.");
+  else if (!t.ok) tips.push("Sem câmera: assumindo 30 cm. Defina a distância em Ajustes ou ative a câmera.");
+  return tips.map(x => `<li>${x}</li>`).join("");
+}
+route(); updateBadge(); requestAnimationFrame(loop); initHDR();
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});

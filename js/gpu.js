@@ -26,13 +26,16 @@ const FS = {
    float a = u_sign*2.0*PI*float(idx % u_sub)/float(u_sub); vec2 tw = vec2(cos(a), sin(a));
    o = u_scale * vec4(e.xy + cmul(tw,q.xy), e.zw + cmul(tw,q.zw)); }`,
   // two wavelengths at once: xy <- lambda1, zw <- lambda2 (pupil grid extents differ per lambda)
-  pupil: `uniform int u_G; uniform vec2 u_L1, u_L2; uniform float u_r, u_lam1, u_lam2; uniform vec3 u_z1, u_z2; uniform int u_two;
+  pupil: `uniform int u_G; uniform vec2 u_L1, u_L2; uniform float u_r, u_lam1, u_lam2; uniform vec3 u_z1, u_z2; uniform int u_two; uniform float u_nan;
   out vec4 o;
   vec2 field(vec2 L, float lam, vec3 z){ ivec2 p = ivec2(gl_FragCoord.xy);
     vec2 i = vec2(p.x < u_G/2 ? p.x : p.x-u_G, p.y < u_G/2 ? p.y : p.y-u_G);
     vec2 xy = vec2(i.x, -i.y) * L / float(u_G); /* rows go DOWN the screen */ float rho2 = dot(xy,xy)/(u_r*u_r); if (rho2 > 1.0) return vec2(0);
-    float phi = atan(xy.y, xy.x);
-    float w = z.x*sqrt(3.)*(2.*rho2-1.) + z.y*sqrt(6.)*rho2*cos(2.*phi) + z.z*sqrt(6.)*rho2*sin(2.*phi);
+    /* NO atan(): atan(0,0) is undefined in GLSL and returns NaN on Apple GPUs (iOS black-canvas bug).
+       rho^2 cos2phi = (x^2-y^2)/r^2, rho^2 sin2phi = 2xy/r^2 */
+    float r2 = u_r*u_r;
+    float w = z.x*sqrt(3.)*(2.*rho2-1.) + z.y*sqrt(6.)*(xy.x*xy.x - xy.y*xy.y)/r2 + z.z*sqrt(6.)*(2.*xy.x*xy.y)/r2;
+    w += u_nan;   /* 0 normally; NaN only in the ?simnan=1 test (simulates the Apple-GPU atan NaN) */
     float ph = 2.*PI*w/lam; return vec2(cos(ph), sin(ph)); }
   void main(){ o = vec4(field(u_L1,u_lam1,u_z1), u_two==1 ? field(u_L2,u_lam2,u_z2) : vec2(0)); }`,
   bin: `uniform sampler2D u_in; uniform int u_G, u_S, u_os; out vec4 o;
@@ -64,8 +67,10 @@ const FS = {
   vec3 lin(vec3 c){ return mix(c/12.92, pow((c+0.055)/1.055, vec3(2.4)), step(0.04045, c)); }
   void main(){ ivec2 p = ivec2(gl_FragCoord.xy); vec3 c = lin(texelFetch(u_img, p, 0).rgb);   // row 0 = top of the canvas
     float Y = dot(c, vec3(0.2126,0.7152,0.0722)); oT = vec4(Y); oRGB = vec4(c,1); }`,
-  packTp: `uniform sampler2D u_t; uniform float u_mid, u_b; out vec4 o;
-  void main(){ float t = texelFetch(u_t, ivec2(gl_FragCoord.xy),0).x; o = vec4(u_mid + u_b*(t-u_mid), 0, t, 0); }`,
+  packTp: `uniform sampler2D u_t; uniform float u_mid, u_b, u_lo; uniform int u_edr; out vec4 o;
+  void main(){ float t = texelFetch(u_t, ivec2(gl_FragCoord.xy),0).x;
+    float tp = u_edr==1 ? u_lo + (1.0-u_lo)*t : u_mid + u_b*(t-u_mid);   /* EDR: background stays SDR white, ink raised by lo */
+    o = vec4(tp, 0, t, 0); }`,
   // pack an RGB real texture into two complex textures
   pack: `uniform sampler2D u_x; uniform int u_rgb; layout(location=0) out vec4 o0; layout(location=1) out vec4 o1;
   void main(){ vec4 x = texelFetch(u_x, ivec2(gl_FragCoord.xy),0); if (u_rgb==1){ o0 = vec4(x.r,0,x.g,0); o1 = vec4(x.b,0,0,0);} else { o0 = vec4(x.r,0,0,0); o1 = vec4(0);} }`,
@@ -95,11 +100,15 @@ const FS = {
   void main(){ ivec2 p = ivec2(gl_FragCoord.xy); float t = texelFetch(u_t,p,0).x; vec3 x = texelFetch(u_x,p,0).rgb;
     vec3 orig = u_photo==1 ? texelFetch(u_rgb,p,0).rgb : vec3(t);
     vec3 proc = u_photo==1 ? max(orig + (x.r - t), 0.) : x;      // photo: Y-only change, chroma kept
+    if (any(isnan(proc)) || any(isinf(proc))) proc = orig;           // never show NaN as black
     bool useProc = u_filter==1 && !(u_split==1 && p.x < u_N/2);
     o = vec4(useProc ? proc : orig, 1); }`,
   retinaMul: `uniform sampler2D u_c1, u_c2, u_h1, u_h2; layout(location=0) out vec4 o0; layout(location=1) out vec4 o1;
   void main(){ ivec2 p = ivec2(gl_FragCoord.xy); vec4 c1 = texelFetch(u_c1,p,0), c2 = texelFetch(u_c2,p,0), h1 = texelFetch(u_h1,p,0), h2 = texelFetch(u_h2,p,0);
     o0 = vec4(cmul(h1.xy,c1.xy), cmul(h1.zw,c1.zw)); o1 = vec4(cmul(h2.xy,c2.xy),0,0); }`,
+  // sanity probe: 64x64 subsample of the composite (and target) -> read back on the CPU
+  probe: `uniform sampler2D u_c, u_t, u_x; uniform int u_N; out vec4 o;   /* r = raw solution X (unguarded), g = shown, a = target */
+  void main(){ ivec2 p = ivec2(gl_FragCoord.xy) * (u_N/64) + u_N/128; o = vec4(texelFetch(u_x,p,0).r, texelFetch(u_c,p,0).g, 0., texelFetch(u_t,p,0).x); }`,
   display: `uniform sampler2D u_c, u_r1, u_r2; uniform int u_N, u_retina, u_hdr; uniform float u_gain; out vec4 o;
   vec3 enc(vec3 c){ vec3 a = abs(c); vec3 e = mix(a*12.92, 1.055*pow(a, vec3(1./2.4)) - 0.055, step(0.0031308, a)); return sign(c)*e; }
   void main(){ ivec2 p = ivec2(int(gl_FragCoord.x), u_N - 1 - int(gl_FragCoord.y));
@@ -127,19 +136,23 @@ export class Engine {
     for (const k of ["fa", "fb", "T", "RGB", "Tspec", "tmp", "c1", "c2", "s1", "s2", "g1", "g2", "X0", "X1", "Y0", "Y1", "C",
       "aR0", "aG0", "aB0", "aL0", "aR1", "aG1", "aB1", "aL1", "H1", "H2", "Hr1", "Hr2", "Hk1", "Hk2", "w1", "w2", "r1", "r2", "imgSrc"]) this.t[k] = null;
     for (const k of Object.keys(this.t)) if (k !== "imgSrc") this.t[k] = T(N);
-    this.t.w1 = T(512); this.t.w2 = T(512);   // binned SxS PSFs (S <= 384)
+    this.t.w1 = T(512); this.t.w2 = T(512); this.t.out = T(N);   // binned SxS PSFs (S <= 384)
+    this.t.probe = T(64);
+    this.lost = false; canvas.addEventListener("webglcontextlost", (e) => { e.preventDefault(); this.lost = true; });
     this.t.ga = T(this.G); this.t.gb = T(this.G); this.t.gc = T(this.G);
     this.xi = 0; this.ai = 0; this.fistaT = 1; this.iters = 0; this.ready = false;
-    this.params = { b: 0.6, mid: 0.5, K: 0.01, hi: 1.0, rgb: false, method: "fista", split: true, filter: true, retina: false, photo: false };
+    this.params = { b: 0.6, mid: 0.5, lo: 0.1, maxIters: 30, K: 0.01, hi: 1.0, rgb: false, method: "fista", split: true, filter: true, retina: false, photo: false };
   }
 
+  get displayCanvas() { return this.presenter ? this.presenter.canvas : this.canvas; }
+  setPresenter(p) { this.presenter = p; this.hdr = true; this.hdrMode = "webgpu"; }
   enableHDR() { // (a) HDR/EDR headroom – only where the browser exposes an extended-range WebGL canvas
     const gl = this.gl, c = this.canvas;
     try {
       if (typeof gl.drawingBufferStorage === "function" && typeof c.configureHighDynamicRange === "function") {
         gl.drawingBufferStorage(gl.RGBA16F, this.N, this.N);
         c.configureHighDynamicRange({ mode: "extended" });
-        this.hdr = true;
+        this.hdr = true; this.hdrMode = "webgl-extended";
       }
     } catch (e) { this.hdr = false; }
     return this.hdr;
@@ -217,10 +230,10 @@ export class Engine {
       const L = PRIMARIES.map(pr => [pr.lam * 1e-6 / dthX, pr.lam * 1e-6 / dthY]);
       const r = K.pupil / 2;
       // R,G pair
-      this.run("pupil", [this.t.gc], { u_G: { i: G }, u_L1: L[0], u_L2: L[1], u_r: r, u_lam1: PRIMARIES[0].lam * 1e-3, u_lam2: PRIMARIES[1].lam * 1e-3, u_z1: z[0], u_z2: z[1], u_two: { i: 1 } });
+      this.run("pupil", [this.t.gc], { u_G: { i: G }, u_L1: L[0], u_L2: L[1], u_r: r, u_lam1: PRIMARIES[0].lam * 1e-3, u_lam2: PRIMARIES[1].lam * 1e-3, u_z1: z[0], u_z2: z[1], u_two: { i: 1 }, u_nan: this.simNaN ? NaN : 0 });
       this.fft(this.t.gc, this.t.gc, false, this.t.ga, this.t.gb);
       this.run("bin", [this.t.w1], { u_in: this.t.gc, u_G: { i: G }, u_S: { i: S }, u_os: { i: os } });
-      this.run("pupil", [this.t.gc], { u_G: { i: G }, u_L1: L[2], u_L2: L[2], u_r: r, u_lam1: PRIMARIES[2].lam * 1e-3, u_lam2: 1, u_z1: z[2], u_z2: z[2], u_two: { i: 0 } });
+      this.run("pupil", [this.t.gc], { u_G: { i: G }, u_L1: L[2], u_L2: L[2], u_r: r, u_lam1: PRIMARIES[2].lam * 1e-3, u_lam2: 1, u_z1: z[2], u_z2: z[2], u_two: { i: 0 }, u_nan: this.simNaN ? NaN : 0 });
       this.fft(this.t.gc, this.t.gc, false, this.t.ga, this.t.gb);
       this.run("bin", [this.t.w2], { u_in: this.t.gc, u_G: { i: G }, u_S: { i: S }, u_os: { i: os } });
       this.run("wrap", [this.t.c1, this.t.c2], { u_rg: this.t.w1, u_b: this.t.w2, u_N: { i: N }, u_S: { i: S } });
@@ -235,7 +248,7 @@ export class Engine {
     this.ai = ai; this.fistaT = 1; this.iters = 0; this.modelInfo = info;
     this.ready = true;
     // warm start: keep the current solution when only the PSF changed (pose/distance), restart momentum
-    if (this.hasTarget) { if (this._hasX && this.method.maxIters > 0) { this.fistaT = 1; this.iters = 0; } else this.method.init(this); }
+    if (this.hasTarget) { if (this._hasX && this.maxIters() > 0) { this.fistaT = 1; this.iters = 0; } else this.method.init(this); }
   }
   _clear(t) { const gl = this.gl; gl.bindFramebuffer(gl.FRAMEBUFFER, t.fb); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
     for (let i = 1; i < 6; i++) gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + i, gl.TEXTURE_2D, null, 0);
@@ -257,7 +270,7 @@ export class Engine {
   }
   retarget() { // contrast target changed (b / mid)
     if (!this.hasTarget) return;
-    this.run("packTp", [this.t.tmp], { u_t: this.t.T, u_mid: this.params.mid, u_b: this.params.b });
+    this.run("packTp", [this.t.tmp], { u_t: this.t.T, u_mid: this.params.mid, u_b: this.params.b, u_lo: this.params.lo, u_edr: { i: this.params.hi > 1.0001 ? 1 : 0 } });
     this.fft(this.t.tmp, this.t.Tspec, false);
     if (this.ready) this.method.init(this);
   }
@@ -270,9 +283,10 @@ export class Engine {
     this.fistaT = 1; this.iters = 0; this._hasX = true;
   }
   get method() { return methodById(this.params.method); }
+  maxIters() { const m = this.method.maxIters; return typeof m === "function" ? m(this) : m; }
   iterate(n) {
     if (!this.ready || !this.hasTarget) return 0;
-    const m = this.method; if (this.iters >= m.maxIters) return 0;
+    const m = this.method; if (this.iters >= this.maxIters()) return 0;
     for (let k = 0; k < n; k++) m.step(this);
     return n;
   }
@@ -301,7 +315,28 @@ export class Engine {
       this.run("retinaMul", [this.t.c1, this.t.c2], { u_c1: this.t.s1, u_c2: this.t.s2, u_h1: this.t.Hr1, u_h2: this.t.Hr2 });
       this.fft(this.t.c1, this.t.r1, true); this.fft(this.t.c2, this.t.r2, true);
     }
-    this.run("display", null, { u_c: this.t.C, u_r1: this.t.r1, u_r2: this.t.r2, u_N: { i: N }, u_retina: { i: P.retina && this.ready ? 1 : 0 }, u_hdr: { i: this.hdr ? 1 : 0 }, u_gain: 1.0 });
+    const uni = { u_c: this.t.C, u_r1: this.t.r1, u_r2: this.t.r2, u_N: { i: N }, u_retina: { i: P.retina && this.ready ? 1 : 0 }, u_hdr: { i: this.hdr ? 1 : 0 }, u_gain: 1.0 };
+    if (this.presenter) {          // WebGPU extended canvas: render to float texture, read back, present
+      this.run("display", [this.t.out], uni);
+      const a = this._outBuf || (this._outBuf = new Float32Array(N * N * 4));
+      const gl = this.gl; gl.readBuffer(gl.COLOR_ATTACHMENT0); gl.readPixels(0, 0, N, N, gl.RGBA, gl.FLOAT, a);
+      this.presenter.present(a);
+    } else this.run("display", null, uni);
+  }
+  // returns {ok, reason}: detects NaN/Inf, context loss, or an all-black output on a light target
+  check() {
+    const gl = this.gl;
+    if (this.lost || gl.isContextLost()) return { ok: false, reason: "contexto WebGL perdido (memória?)" };
+    if (!this.hasTarget) return { ok: true };
+    this.run("probe", [this.t.probe], { u_c: this.t.C, u_t: this.t.T, u_x: this.t["X" + this.xi], u_N: { i: this.N } });
+    const a = this.readTex(this.t.probe, 64); const err = gl.getError();
+    let bad = 0, mx = 0, tmean = 0, n = 64 * 64;
+    for (let i = 0; i < n; i++) { const r = a[4 * i], g = a[4 * i + 1], b = this.ready ? r : g; tmean += a[4 * i + 3];
+      if (!Number.isFinite(r) || !Number.isFinite(g) || !Number.isFinite(b)) bad++; else mx = Math.max(mx, r, g, b); }
+    tmean /= n;
+    if (bad) return { ok: false, reason: `${bad} pixels NaN/Inf` };
+    if (tmean > 0.2 && mx < 0.05) return { ok: false, reason: `saída preta (max ${mx.toFixed(3)}, alvo ${tmean.toFixed(2)})` + (err ? ` glErr ${err}` : "") };
+    return { ok: true, mx, tmean };
   }
   // debug/QA: read back the reference luminance PSF magnitude spectrum DC etc.
   readTex(t, n = 8) { const gl = this.gl; gl.bindFramebuffer(gl.FRAMEBUFFER, t.fb); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);

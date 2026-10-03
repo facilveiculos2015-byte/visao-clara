@@ -58,7 +58,7 @@ export class Tracker {
     // robust smoothing: median of last 9, then one-pole
     this._dHist.push(d); if (this._dHist.length > 9) this._dHist.shift();
     const med = [...this._dHist].sort((a, b) => a - b)[this._dHist.length >> 1];
-    s.d = s.ok ? s.d + 0.3 * (med - s.d) : med;
+    s.d = s.ok ? s.d + 0.15 * (med - s.d) : med;   // heavier smoothing (W5): PSF must not jitter
     // line of sight angles from the face position in the image (camera ~ at the top of the screen)
     const c = [(L[468].x + L[473].x) / 2 * W - W / 2, (L[468].y + L[473].y) / 2 * H - H / 2];
     s.yaw = Math.atan2(c[0], f) * 180 / Math.PI; s.pitch = Math.atan2(c[1], f) * 180 / Math.PI;
